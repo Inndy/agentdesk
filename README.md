@@ -1,6 +1,6 @@
 # Agentdesk
 
-本機的人類議題收件匣。Go 單一執行檔同時提供 CLI、SQLite 持久化服務與 Vue Web UI。第一版包含 Decision、Action、Notice、自由回答／選項、Ack、稍後處理、版本衝突檢查、事件補讀與 coordinator 接手；Hub、Telegram 與即時 session 注入延後。
+本機的人類議題收件匣。Go 單一執行檔同時提供 CLI、SQLite 持久化服務與 Vue Web UI。包含 Decision、Action、Notice、自由回答／選項、Ack、稍後處理、版本衝突檢查、事件補讀、coordinator 接手，以及選用的 Telegram 單向議題通知。Hub、Telegram 內回答與即時 session 注入延後。
 
 ## 建置
 
@@ -13,6 +13,8 @@ vp node scripts/build.mjs
 
 輸出為 Windows 的 `bin/agentdesk.exe`，或 Linux/macOS 的 `bin/agentdesk`。`vp node scripts/build.mjs --all` 建置六個目標：Windows／Linux／macOS 各 amd64、arm64。所有 Go 建置設定 `CGO_ENABLED=0`；Web 資產已內嵌，不需在執行時安裝 Node、SQLite 或攜帶 dist。
 
+也可使用 Makefile：`make install`、`make build`、`make check`、`make test`、`make test-e2e`、`make fmt`。`make build-all` 先建置一次 Web，再以最多 3 個 Go build 平行建置六個目標；可用 `make build-all JOBS=6` 調整並行數，或 `JOBS=1` 依序建置。
+
 若手動建置，先執行 `vp -C agentdesk-ui run build`，再執行 `go build -o bin/agentdesk ./cmd/agentdesk`（Windows 加 `.exe`，並將環境變數 `CGO_ENABLED` 設為 `0`）。
 
 ## 開始使用
@@ -20,9 +22,11 @@ vp node scripts/build.mjs
 以下假設 `agentdesk` 已加入 PATH；也可直接使用完整執行檔路徑。
 
 ```sh
-agentdesk init --name my-project
-agentdesk serve
+agentdesk start --name my-project --json
+agentdesk status --json
 ```
+
+`start` 會初始化尚未設定的專案、啟動 detached server，或透過認證 API 驗證並重用既有服務；launcher 結束後 server 仍持續執行。啟動訊息寫入資料目錄的 `server.log`，`server.pid` 保存 PID。也可使用 `make start ARGS="..."`。需要前景執行時使用 `agentdesk serve`／`make serve`。既有服務不會因 `start` 重複呼叫而啟動第二份；更改其啟動選項前需先停止既有程序。
 
 在另一個終端以人類身分登入：
 
@@ -68,11 +72,28 @@ agentdesk serve --listen 100.100.10.20:7331 --public-url http://100.100.10.20:73
 agentdesk login
 ```
 
-將輸出的網址複製到已連上 VPN 的手機。`--listen 0.0.0.0:7331` 也需要明確的 `--public-url`；它會監聽所有介面，請自行限制防火牆。第一版 HTTP 適用於受保護 VPN；HTTPS 可透過既有反向代理，將 `--public-url` 設為 HTTPS origin。服務本身不終結 TLS。手機不能使用 localhost URL。
+將輸出的網址複製到已連上 VPN 的手機。一般服務預設 loopback；啟用 Telegram 且未明確指定 `--listen` 時，會自動選擇外部路由使用的主要網卡位址並監聽該位址。`agentdesk network --json` 可查看偵測結果。明確使用 wildcard listener 時也會偵測廣告位址；`--public-url` 永遠優先。偵測的是主機 NIC 位址，可能是 NAT 後的私有 IP，不會自動取得 WAN IP、設定 port forwarding 或保證 VPN 路由可達。第一版 HTTP 適用於受保護 VPN；HTTPS 可透過既有反向代理，將 `--public-url` 設為 HTTPS origin。手機不能使用 localhost URL。
 
 Web 先從 URL fragment 取得 token，立即清除網址中的 token，再交換為 HttpOnly、SameSite=Strict cookie。HTTPS public URL 使用 Secure cookie。人類回覆要求同源 Origin 與 JSON；agent 的 Bearer token 不可登入 Web 或提交回答。
 
 頁面預設跟隨裝置的深淺色偏好，裝置設定變更時會同步更新。右上角可改選深色或淺色，也可切回「跟隨裝置」；選擇會在該瀏覽器保存，重新整理與登入後仍保留。
+
+## Telegram 單向通知
+
+啟用後，每個新議題只排入一筆通知，傳送一則含專案名稱、類型、標題及議題連結的文字訊息；建立重試不會重複排入。回答、改題與 Ack 不另發訊息。服務從不呼叫 `getUpdates` 或修改 webhook，可與既有 bot 接收端共存。
+
+私有設定預設放在專案資料目錄的 `telegram.json`：`{"bot_token":"...","chat_id":"..."}`，也可用 `AGENTDESK_TELEGRAM_BOT_TOKEN`／`AGENTDESK_TELEGRAM_CHAT_ID` 覆寫。不要把實際設定放入 repository。使用者既有的 tg-notify 設定可以直接引用：
+
+```sh
+agentdesk start --telegram --telegram-config /path/to/tg-notify/secrets.json
+agentdesk notifications --json
+```
+
+成功啟動後保存啟動選項與設定檔路徑，之後同專案 `agentdesk start` 會沿用；不把 bot secret 複製進 project.json。
+
+通知連結包含獨立的一次性登入 token，放在 URL fragment，不使用長期 human token 或 agent token。24 小時內首次開啟可交換成既有的 7 天 owner session，前端隨即清除 fragment。資料庫只保存 token 雜湊；重用 token 無法登入新的瀏覽器，但已登入的瀏覽器可再次開啟同一通知。`login --rotate` 同時撤銷未使用的通知登入連結。連結具有登入能力，不應轉傳；通知已停用 link preview。
+
+通知狀態持久保存於 SQLite，可查詢 pending／sending／sent／failed／unknown／skipped。明確的 Telegram 429／5xx 拒絕會退避重試；無法確定遠端是否收到的斷線、無法解析回應或送出中程序崩潰，會記為 unknown 且不自動重送，以免重複。永久拒絕記為 failed。已回答／撤銷且尚未送出的議題記為 skipped。這不宣稱跨 Telegram exactly-once，也不把通知送出視為人類 Ack。
 
 ## 專案與資料
 
@@ -80,16 +101,25 @@ Web 先從 URL fragment 取得 token，立即清除網址中的 token，再交�
 
 `project.json` 保存 project ID、服務端點與 agent token；`human.json` 獨立保存人類 token；`agentdesk.db` 保存議題、歷史、session 雜湊、receipt 與 lease。這些是本機私有資料，不應提交到版本控制。Unix 目錄／憑證使用 0700／0600；Windows 繼承目錄 ACL。相同 OS 使用者仍能存取本機檔案，本產品的 agent/human API 權限分離不構成 OS 層的隔離。
 
-同一資料目錄只允許一個 server；停止程序後 OS 會釋放鎖。SQLite 使用 WAL，請將資料放在本機磁碟。備份時停止服務後複製整個資料目錄。每個專案預設一個 service／port；其他專案使用不同 `--listen` port。
+同一資料目錄只允許一個 server。執行時會產生 `server.pid`，內容是 server 的十進位 PID；正常停止或啟動失敗時刪除。程序被強制終止後可能留下舊檔，下次啟動會在取得 `server.lock` 的 OS 鎖後覆寫。OS 鎖才是是否正在執行的依據，不因 PID 檔存在或 PID 被重用而阻擋啟動；請勿在服務執行時刪除 `server.lock`。
+
+SQLite 使用 WAL，請將資料放在本機磁碟。備份時停止服務後複製整個資料目錄。每個專案預設一個 service／port；其他專案使用不同 `--listen` port。
 
 ## Agent 安裝
 
-將本專案的 `skills/agentdesk` 整個資料夾複製到目標專案：
+使用 `make install-skill`，會把 binary 安裝至 `~/.local/bin`，並將同一 skill 安裝至 Claude Code 與 Codex 的全域目錄。可傳 `ARGS="--telegram-config /path/to/tg-notify/secrets.json"`，讓兩個 agent 都能引用既有設定；這只保存路徑，沒有複製 secret。
+
+- Claude Code：`~/.claude/skills/agentdesk/SKILL.md`。
+- Codex：`$CODEX_HOME/skills/agentdesk/SKILL.md`（預設 `~/.codex/skills/agentdesk`）。
+
+兩份 skill 的 `runtime.json` 指向同一個共享 binary；即使宿主 PATH 不同，也可使用絕對路徑。安裝後下一輪可使用 `/agentdesk`（Codex 也可用 `$agentdesk`）；它會確保服務執行，並由 agent 選擇可用機制啟動／恢復背景監控。已有的 project server 會重用，未初始化的專案會透過 `start` 建立。每次開始或恢復工作都檢查監控 job 的實際 handle；持續監看該 agent 的 question set，直到 goal 完成且無後續指示，或使用者明確停止。
+
+也可以將本專案的 `skills/agentdesk` 整個資料夾複製到個別專案：
 
 - Claude Code：`.claude/skills/agentdesk/SKILL.md`。
 - Codex：`.agents/skills/agentdesk/SKILL.md`。
 
-將 binary 加入 PATH，或在專案 agent 指示中提供路徑。已有的 `/loop` 或 active goal 可使用此 skill 的收件迴圈；安裝不自動啟動排程／goal，不修改 sandbox、approval 或既有 ADR／記憶規則。首版使用 shell CLI，不依賴 Channels 或 app-server。實際宿主載入狀態請由各自 session 確認。
+安裝不自行建立新的 goal／排程、不修改 sandbox、approval 或既有 ADR／記憶規則。背景監控依宿主真正提供的 job／session 能力運作；若無法啟動新模型回合，答案仍持久保存並於下一輪補讀。首版使用 shell CLI，不依賴 Channels 或 app-server。
 
 ## 驗證
 

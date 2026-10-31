@@ -19,6 +19,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	webassets "agentdesk/agentdesk-ui"
@@ -28,7 +29,12 @@ import (
 const usage = `Agentdesk — local human issue inbox
 
   agentdesk init [--name NAME] [--data-dir PATH]
+  agentdesk start [--telegram] [--telegram-config PATH]   Init/reuse detached server
+  agentdesk status --json               Verify project service identity
   agentdesk serve [--listen 127.0.0.1:7331] [--public-url URL] [--open]
+  agentdesk serve --telegram [--telegram-config PATH]   Auto-detect and bind NIC
+  agentdesk network --json              Show default-route interface address
+  agentdesk notifications --json        Inspect Telegram delivery state
   agentdesk login [--open] [--rotate]     Human-only: emits a secret login URL
   agentdesk create --file question.json --key stable-key --json
   agentdesk get ISSUE-ID --json
@@ -48,7 +54,10 @@ schema_version=1 JSON. stdin: --file -. Exit codes: 0 success, 1 error,
 `
 
 type options struct {
+	publicURLExplicit, telegramExplicit, telegramConfigExplicit        bool
 	dataDir, name, listen, publicURL, file, key, consumer, holder, ttl string
+	telegramConfig                                                     string
+	telegram, listenExplicit                                           bool
 	timeout                                                            time.Duration
 	revision                                                           int
 	after                                                              int64
@@ -56,7 +65,7 @@ type options struct {
 }
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	code, err := run(ctx, os.Args[1:])
 	if err != nil {
@@ -79,6 +88,8 @@ func parse(args []string) (string, options, []string, error) {
 	f.StringVar(&o.name, "name", "", "project name")
 	f.StringVar(&o.listen, "listen", "127.0.0.1:7331", "listen address")
 	f.StringVar(&o.publicURL, "public-url", "", "browser URL")
+	f.StringVar(&o.telegramConfig, "telegram-config", "", "private Telegram config path")
+	f.BoolVar(&o.telegram, "telegram", false, "send issue-link notifications")
 	f.StringVar(&o.file, "file", "-", "JSON file or -")
 	f.StringVar(&o.key, "key", "", "idempotency key")
 	f.StringVar(&o.consumer, "consumer", "coordinator", "consumer")
@@ -114,7 +125,22 @@ func parse(args []string) (string, options, []string, error) {
 			pos = append(pos, a)
 		}
 	}
-	return command, o, pos, f.Parse(flags)
+	err := f.Parse(flags)
+	f.Visit(func(value *flag.Flag) {
+		if value.Name == "public-url" {
+			o.publicURLExplicit = true
+		}
+		if value.Name == "telegram" {
+			o.telegramExplicit = true
+		}
+		if value.Name == "telegram-config" {
+			o.telegramConfigExplicit = true
+		}
+		if value.Name == "listen" {
+			o.listenExplicit = true
+		}
+	})
+	return command, o, pos, err
 }
 func run(ctx context.Context, args []string) (int, error) {
 	command, o, pos, err := parse(args)
@@ -124,6 +150,13 @@ func run(ctx context.Context, args []string) (int, error) {
 	if command == "help" {
 		fmt.Print(usage)
 		return 0, nil
+	}
+	if command == "network" {
+		nic, err := desk.DetectPublicNIC()
+		if err != nil {
+			return 1, err
+		}
+		return output(nic)
 	}
 	dir, err := desk.DataDir(o.dataDir)
 	if err != nil {
@@ -137,10 +170,15 @@ func run(ctx context.Context, args []string) (int, error) {
 		return output(map[string]any{"project_id": c.ProjectID, "name": c.Name, "data_dir": dir})
 	}
 	c, err := desk.LoadConfig(dir)
+	if command == "start" && errors.Is(err, os.ErrNotExist) {
+		c, err = desk.Init(dir, o.name)
+	}
 	if err != nil {
 		return 1, err
 	}
 	switch command {
+	case "start":
+		return startServer(ctx, dir, c, o)
 	case "serve":
 		return serve(ctx, dir, c, o)
 	case "login":
@@ -235,6 +273,10 @@ func run(ctx context.Context, args []string) (int, error) {
 		v, err = client.request(ctx, "GET", "/issues?pending="+strconv.FormatBool(o.pending), nil, "")
 	case "inbox":
 		v, err = client.request(ctx, "GET", "/inbox?consumer="+url.QueryEscape(o.consumer), nil, "")
+	case "status":
+		v, err = client.request(ctx, "GET", "/status", nil, "")
+	case "notifications":
+		v, err = client.request(ctx, "GET", "/notifications", nil, "")
 	case "wait":
 		if o.timeout < 0 || o.timeout > 24*time.Hour {
 			return 2, errors.New("timeout must be between 0s and 24h")
@@ -399,24 +441,45 @@ func (c *apiClient) watch(ctx context.Context, o options) (int, error) {
 	}
 }
 func serve(ctx context.Context, dir string, c desk.Config, o options) (int, error) {
+	o = serverOptions(c, o)
+	var telegram desk.TelegramConfig
+	var err error
+	if o.telegram {
+		telegram, err = desk.LoadTelegram(dir, o.telegramConfig)
+		if err != nil {
+			return 2, err
+		}
+	} else if o.telegramConfigExplicit {
+		return 2, errors.New("--telegram-config requires --telegram")
+	}
+	listen, advertise, err := desk.ResolveNetwork(o.listen, o.publicURL, o.listenExplicit, o.telegram, desk.DetectPublicNIC)
+	if err != nil {
+		return 2, err
+	}
 	unlock, err := desk.LockServer(dir)
 	if err != nil {
 		return 1, err
 	}
 	defer unlock()
-	ln, err := net.Listen("tcp", o.listen)
+	removePID, err := desk.WriteServerPID(dir)
+	if err != nil {
+		return 1, err
+	}
+	defer removePID()
+	ln, err := net.Listen("tcp", listen)
 	if err != nil {
 		return 1, err
 	}
 	defer ln.Close()
 	host, port, _ := net.SplitHostPort(ln.Addr().String())
 	if host == "" || net.ParseIP(host).IsUnspecified() {
-		if o.publicURL == "" {
-			return 2, errors.New("--public-url is required for a wildcard listen address")
-		}
 		host = "127.0.0.1"
 	}
 	c.Endpoint = "http://" + net.JoinHostPort(host, port)
+	c.Server = desk.ServerDefaults{Telegram: o.telegram, TelegramConfig: o.telegramConfig, PublicURL: o.publicURL}
+	if o.listenExplicit {
+		c.Server.Listen = o.listen
+	}
 	if o.publicURL != "" {
 		if err = desk.ValidateURL(o.publicURL); err != nil {
 			return 2, err
@@ -424,18 +487,28 @@ func serve(ctx context.Context, dir string, c desk.Config, o options) (int, erro
 		c.PublicURL = strings.TrimRight(o.publicURL, "/")
 	} else {
 		c.PublicURL = c.Endpoint
+		if advertise != "" {
+			c.PublicURL = "http://" + net.JoinHostPort(advertise, port)
+		}
 	}
 	s, err := desk.OpenStore(dir, c)
 	if err != nil {
 		return 1, err
 	}
 	defer s.DB.Close()
+	s.TelegramEnabled = o.telegram
 	assets, err := fs.Sub(webassets.Files, "dist")
 	if err != nil {
 		return 1, err
 	}
 	if err = desk.WriteJSON(filepath.Join(dir, "project.json"), c); err != nil {
 		return 1, err
+	}
+	if o.telegram {
+		workerCtx, stopWorker := context.WithCancel(ctx)
+		workerDone := make(chan struct{})
+		go func() { defer close(workerDone); (&desk.TelegramSender{Store: s, Config: telegram}).Run(workerCtx) }()
+		defer func() { stopWorker(); <-workerDone }()
 	}
 	server := &http.Server{Handler: (&desk.Server{Store: s, Dir: dir, Assets: assets}).Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 90 * time.Second, WriteTimeout: 65 * time.Second}
 	finished := make(chan error, 1)

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -179,5 +180,56 @@ func TestParseInterspersedFlags(t *testing.T) {
 	command, o, args, err := parse([]string{"get", "D-123", "--json", "--data-dir", "some path"})
 	if err != nil || command != "get" || len(args) != 1 || !o.json || o.dataDir != "some path" {
 		t.Fatal("interspersed flags rejected")
+	}
+}
+
+func TestServePIDLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	c, err := desk.Init(dir, "PID lifecycle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "server.pid")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("init must not publish a server PID")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := serve(ctx, dir, c, options{listen: "127.0.0.1:0"}); done <- err }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		b, readErr := os.ReadFile(path)
+		if readErr == nil && strings.TrimSpace(string(b)) == strconv.Itoa(os.Getpid()) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("server did not publish its PID")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err = <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("server did not shut down")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("graceful shutdown retained the PID: %v", err)
+	}
+	unlock, err := desk.LockServer(dir)
+	if err != nil {
+		t.Fatal("shutdown retained the project lock", err)
+	}
+	unlock()
+	// A startup error must clean up both PID and lock as well.
+	if _, err := serve(context.Background(), dir, c, options{listen: "not-a-valid-listen-address"}); err == nil {
+		t.Fatal("invalid listen address succeeded")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("failed startup retained the PID")
 	}
 }

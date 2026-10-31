@@ -6,6 +6,8 @@
 
 `POST /api/v1/session` 接受 `{ "token": "..." }`，交換為 7 天的 HttpOnly cookie。`GET /api/v1/session` 回傳 project ID、name 與由服務決定的 `human:owner`。`DELETE /api/v1/session` 撤銷目前 session。登入 token 30 天到期，可用本機 `login --rotate` 撤銷既有 token 與所有 session。
 
+Telegram 通知使用獨立的 24 小時一次性 token，同樣透過 session endpoint 兌換。消耗 token 與保存 session 在同一個 transaction 完成；並行兌換只有一次成功。已登入的瀏覽器可重新開啟舊連結，但該 token 無法再次登入其他瀏覽器。rotate 也會撤銷未使用的通知 token。API 的議題與通知狀態回應不包含登入 token。
+
 以下端點要求人類 session；所有人類 mutation（含登入）要求 Origin 等於目前 origin 或明確設定的 public URL。不接受 agent Bearer 作為人類驗證。
 
 | 方法／路徑 | 用途／body |
@@ -29,6 +31,8 @@ Decision 至少選一個有效 option ID 或填寫非空 text。Action／Notice 
 | POST `/issues/{id}/update` | `{revision, draft}`；pending only，revision +1 |
 | POST `/issues/{id}/withdraw` | `{revision}`；pending only |
 | GET `/inbox?consumer=coordinator` | 最多 200 個未 receipt 事件 |
+| GET `/status` | project ID、PID、public URL、Telegram 是否啟用 |
+| GET `/notifications` | Telegram outbox 狀態、attempts、message ID 與不含 secret 的錯誤 |
 | GET `/wait?consumer=coordinator&after=0&timeout=50s` | Long poll，伺服器單次上限 55s |
 | GET `/wait?issue=ID&timeout=50s` | 等到 issue 非 pending |
 | POST `/claim` | `{consumer, holder, ttl:"60s", release:false}`；ttl 1s–10m |

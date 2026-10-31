@@ -73,12 +73,13 @@ async function startService() {
       { timeout: 15000 },
     )
     .toBe(true);
+  expect(Number(readFileSync(path.join(dir, "server.pid"), "utf8").trim())).toBe(service.pid);
 }
 
 async function stopService() {
   if (service && service.exitCode === null) {
     const closed = new Promise<void>((resolve) => service.once("exit", () => resolve()));
-    service.kill();
+    service.kill("SIGKILL");
     await closed;
   }
 }
@@ -153,6 +154,8 @@ test("選項回答、CLI wait、receipt 與服務重啟", async () => {
   const session = cookies.find((c) => c.name === "agentdesk_session");
   expect(session?.httpOnly).toBe(true);
   await stopService();
+  // Forced process termination can leave a stale PID; restart must replace it.
+  expect(Number(readFileSync(path.join(dir, "server.pid"), "utf8").trim())).toBe(service.pid);
   await startService();
   expect(cli("inbox", "--json")[0].event_id).toBe(inbox[0].event_id);
   cli("claim", "--holder", "e2e-coordinator");
@@ -285,4 +288,46 @@ test("斷線保留未送出回答，恢復連線後可重試", async () => {
   await page.getByRole("button", { name: "送出回答", exact: true }).click();
   await expect(page.getByRole("heading", { name: "已保存你的回答" })).toBeVisible();
   expect(cli("get", issue.issue_id).reply.text).toBe("斷線時保留這段回答");
+});
+
+test("detached start 自動初始化、在 launcher 結束後存活並重用服務", async () => {
+  const detachedDir = mkdtempSync(path.join(tmpdir(), "agentdesk-detached-"));
+  let childPID: number | undefined;
+  function start(...args: string[]) {
+    const output = execFileSync(binary, ["start", "--data-dir", detachedDir, "--json", ...args], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    return JSON.parse(output).data;
+  }
+  try {
+    const first = start("--listen", "127.0.0.1:0");
+    childPID = first.service.pid;
+    expect(first.started).toBe(true);
+    expect(Number(readFileSync(path.join(detachedDir, "server.pid"), "utf8").trim())).toBe(
+      childPID,
+    );
+    expect((await fetch(first.service.public_url)).ok).toBe(true);
+    const reused = start();
+    expect(reused.already_running).toBe(true);
+    expect(reused.service.pid).toBe(childPID);
+    process.kill(childPID!, "SIGKILL");
+    childPID = undefined;
+    await expect
+      .poll(async () => {
+        try {
+          return (await fetch(first.service.public_url)).ok;
+        } catch {
+          return false;
+        }
+      })
+      .toBe(false);
+    const recovered = start();
+    childPID = recovered.service.pid;
+    expect(recovered.started).toBe(true);
+    expect(childPID).not.toBe(first.service.pid);
+    expect((await fetch(recovered.service.public_url)).ok).toBe(true);
+  } finally {
+    if (childPID) process.kill(childPID, "SIGKILL");
+  }
 });

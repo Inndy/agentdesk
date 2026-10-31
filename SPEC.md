@@ -17,7 +17,7 @@ Agentdesk 必須與各專案既有的 ADR、計畫與記憶系統並存。
 
 - 使用 Go，提供跨平台的單一 binary。
 - 目標平台為 Windows、Linux、macOS；CPU 架構矩陣於實作時訂定。
-- 第一版交付本機 CLI 與 Web UI；中央 Hub 與 Telegram 延後。
+- 第一版交付本機 CLI 與 Web UI；後續已確認加入 Telegram 單向通知與議題登入連結，中央 Hub 與 Telegram 內回答仍延後。
 - 第一版由使用者自行提供 VPN 內網連線，Web 採 token-based 登入，支援本機啟動瀏覽器帶入 token，以及複製登入網址到手機使用。
 - 同一 binary 可啟動 server，也可作為 agent 使用的 CLI。
 - 先支援 Claude Code 與 Codex；核心介面須能供其他具 shell 能力的 agent 使用。
@@ -268,6 +268,8 @@ Hub 尚未取得專案確認時，UI 顯示「已收件，等待專案確認」�
 
 ## 11. Telegram 整合
 
+目前已交付的第一階段是 project service 直接發送單向通知：新議題一則訊息，包含議題連結及獨立的一次性登入 token；只呼叫 sendMessage，不接收 bot update。服務可引用既有 tg-notify secret，不與既有 update 接收端競爭。通知採 SQLite outbox，已送出不重送，明確限流／暫時拒絕退避重試，不確定是否已送達時保留 unknown 以避免重複。以下中央接收與互動規則供後續階段使用。
+
 - 同一個 bot 只有一個受控的 update 接收流程，由 Hub 或既有接收端負責。
 - 若 bot 已供其他系統使用，須由既有接收端分流或整合 Hub，不啟動競爭收件者。
 - 專案 service 與 agent session 不直接各自接收同一 bot 的 update。
@@ -338,6 +340,7 @@ Skill 教導 agent 如何分類議題、撰寫背景與選項、描述阻擋範�
 5. 持久事件、冪等、版本檢查、斷線補讀。
 6. Claude Code 與 Codex 共通流程及各自安裝說明。
 7. 本機部署、響應式 Web UI，以及 token 登入與手機登入網址。
+8. 後續確認增補：Telegram 單向新議題通知及一次性登入連結。
 
 第一版 Web 提供本機專案議題清單、詳情、選項與自由回答、Ack 及交付歷史；中央 Hub 的跨專案收件匣延後。
 
@@ -345,7 +348,6 @@ Skill 教導 agent 如何分類議題、撰寫背景與選項、描述阻擋範�
 
 - 中央 Hub 的部署介面與跨專案收件匣。
 - Hub 的專案註冊、持久轉交與離線代收。
-- Telegram 摘要通知及 Web 連結。
 
 可後續加入：
 
@@ -402,14 +404,19 @@ Skill 教導 agent 如何分類議題、撰寫背景與選項、描述阻擋範�
 
 ## 19. 第一版實作預設
 
-以下記錄第一版已採用的實作預設，不影響前述延後的 Hub／Telegram 範圍；操作與 API 細節見 `README.md`、`docs/API.md`。
+以下記錄第一版及後續已確認增補的實作預設；操作與 API 細節見 `README.md`、`docs/API.md`。
 
 - Go 1.25 以上，`modernc.org/sqlite` v1.59.0，SQLite WAL；六個平台／架構目標均以 `CGO_ENABLED=0` 建置。
 - 使用 `init` 明確初始化 project ID。Git worktree 從 Git common directory 探索共用狀態；非 Git 專案使用 `.agentdesk` 並支援向上探索。可透過 `--data-dir` 或 `AGENTDESK_DATA_DIR` 覆寫。
-- 同一資料目錄只允許一個 server，以作業系統檔案鎖避免重複啟動。CLI 從專案設定取得實際 endpoint；不同專案使用獨立 token、資料庫及 port。
+- 同一資料目錄只允許一個 server，以 `server.lock` 的作業系統檔案鎖避免重複啟動。執行時寫入 `server.pid`（十進位 PID），正常關閉或啟動失敗時清除；當程序強制終止留下舊檔，下一次取得鎖的 server 會覆寫它，不以 PID 是否存在判斷服務擁有權。CLI 從專案設定取得實際 endpoint；不同專案使用獨立 token、資料庫及 port。
 - 第一版單一人類 owner。人類 token 與 agent token 分檔，登入 token 有效 30 天，Web session 有效 7 天；`login --rotate` 可撤銷 token 與全部 session。這是 API 角色區分，不是相同 OS 使用者之間的檔案隔離。
 - `serve --open`／`login --open` 可開啟本機預設瀏覽器；`login` 可輸出供手機使用的秘密網址。VPN 位址透過 `--listen` 與 `--public-url` 明確設定；HTTP 僅供受保護的本機／VPN 網路，HTTPS 使用既有反向代理。
 - Consumer 的 receipt 逐事件保存。Coordinator 以唯一 session holder 取得／更新 lease，預設 60 秒；其他 holder 在到期前不得接管。外部副作用仍需專案持久工作紀錄與冪等設計。
 - 事件以 long polling 等待；watch 使用 sequence 補讀及斷線退避，不自動 receipt。新程序重播未 receipt 的事件。
 - 實質改題限 pending 狀態並增加 revision；舊版回覆回傳衝突。已回答議題不能改答案或改題，需建立關聯的新問題。稍後處理為獨立布林標記；Action Ack 仍僅代表收到。
 - 本機 API 與機器輸出採 schema_version 1；exit code 為 0 成功、1 執行錯誤、2 參數錯誤、3 等待逾時、4 版本／lease 衝突。
+- `start` 可自動初始化並 detached 啟動／驗證重用專案服務；`status` 透過已認證 API 回報 PID 與 public URL，不依賴 PID 檔判定身分。啟動選項及 Telegram 設定檔路徑可持久保存。
+- 啟用 Telegram 且未指定 listener 時，以外部路由自動選擇的 NIC 位址監聽並產生連結，`--public-url` 優先覆寫。這是主機 NIC 位址而非保證可從網際網路連線的 WAN 位址。
+- Telegram 連結的 token 有效 24 小時且只能兌換一次，保存雜湊、以 transaction 兌換 owner session，開啟後清除 URL fragment。長期人類 token 與 agent token 不進入通知；`login --rotate` 同時撤銷未使用連結。已登入的同一瀏覽器可重開原通知。
+- `/agentdesk` skill 會確保服務啟動，並教導 agent 依宿主能力建立、恢復及驗證背景 question-set monitor；活動工作期間不中斷，直到 goal 完成且無後續指示，或使用者／宿主明確停止。沒有可用的背景機制時必須回報限制，不能宣稱永久執行或自動啟動模型回合。
+- Makefile 提供 build/check/test/start/install-skill 等目標。`build-all` 先建 Web，再以可設定的 bounded parallelism 建置六個 Go 目標（預設 JOBS=4）。

@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -72,6 +73,10 @@ func result(w http.ResponseWriter, v any, err error) {
 		fail(w, 400, "invalid_request", err.Error())
 	}
 }
+func (s *Server) status(w http.ResponseWriter, r *http.Request) {
+	respond(w, 200, map[string]any{"project_id": s.Store.Config.ProjectID, "name": s.Store.Config.Name, "pid": os.Getpid(), "public_url": s.Store.Config.PublicURL, "telegram_enabled": s.Store.TelegramEnabled})
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/session", s.login)
@@ -89,6 +94,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/agent/issues/{id}/update", s.agent(s.update))
 	mux.HandleFunc("POST /api/v1/agent/issues/{id}/withdraw", s.agent(s.withdraw))
 	mux.HandleFunc("GET /api/v1/agent/inbox", s.agent(s.inbox))
+	mux.HandleFunc("GET /api/v1/agent/notifications", s.agent(s.notifications))
+	mux.HandleFunc("GET /api/v1/agent/status", s.agent(s.status))
 	mux.HandleFunc("GET /api/v1/agent/wait", s.agent(s.wait))
 	mux.HandleFunc("POST /api/v1/agent/receipt/{id}", s.agent(s.receipt))
 	mux.HandleFunc("POST /api/v1/agent/claim", s.agent(s.claim))
@@ -149,11 +156,30 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h, err := LoadHuman(s.Dir)
-	if err != nil || len(body.Token) != 64 || time.Now().After(h.ExpiresAt) || subtle.ConstantTimeCompare([]byte(body.Token), []byte(h.Token)) != 1 {
+	if err != nil {
+		fail(w, 500, "storage", "cannot read login credential")
+		return
+	}
+	if len(body.Token) != 64 {
 		fail(w, 401, "unauthorized", "invalid or expired login token")
 		return
 	}
-	token, err := s.Store.NewSession()
+	var token string
+	if time.Now().Before(h.ExpiresAt) && subtle.ConstantTimeCompare([]byte(body.Token), []byte(h.Token)) == 1 {
+		token, err = s.Store.NewSession()
+	} else {
+		token, err = s.Store.RedeemLoginLink(body.Token)
+	}
+	if errors.Is(err, ErrNotFound) {
+		// Reopening a consumed notification link is fine in a browser that
+		// already has a valid owner session; the token itself is still one-use.
+		if current, cookieErr := r.Cookie("agentdesk_session"); cookieErr == nil && s.Store.ValidSession(current.Value) {
+			s.session(w, r)
+			return
+		}
+		fail(w, 401, "unauthorized", "invalid, expired or already used login token")
+		return
+	}
 	if err != nil {
 		fail(w, 500, "storage", "cannot persist session")
 		return
@@ -251,6 +277,11 @@ func consumer(r *http.Request) string {
 }
 func (s *Server) inbox(w http.ResponseWriter, r *http.Request) {
 	v, err := s.Store.Events(consumer(r), 0, true)
+	result(w, v, err)
+}
+
+func (s *Server) notifications(w http.ResponseWriter, r *http.Request) {
+	v, err := s.Store.Notifications()
 	result(w, v, err)
 }
 func (s *Server) wait(w http.ResponseWriter, r *http.Request) {

@@ -1,17 +1,19 @@
 # 第一版驗證紀錄
 
-日期：2026-10-31。環境：Windows amd64、Go 1.27.2、Vite+ 1.3.0。測試僅使用暫存專案與 localhost，沒有操作真實外部工作、個人瀏覽器 profile 或 Telegram。
+日期：2026-10-31。環境：Windows amd64、Go 1.27.2、Vite+ 1.3.0。自動測試使用暫存專案、localhost 與假的 Telegram API；另外依使用者明確授權，使用既有 tg-notify secret 對個人 Telegram 執行實際通知驗證。
 
 ## 已執行
 
-- `CGO_ENABLED=0 go test ./...`：13 項測試通過（10 項 store／HTTP／worktree，3 項 CLI）。
+- `CGO_ENABLED=0 go test ./...`：24 項測試通過，包含資料／HTTP／worktree／PID、NIC 選擇、Telegram outbox、一次性登入連結，以及 CLI／啟動設定。
 - `go vet ./...`：通過。
 - `vp -C agentdesk-ui check`：格式、lint、型別檢查通過。
 - `vp -C agentdesk-ui run build`：`vue-tsc` 與正式前端建置通過。
 - `vp -C agentdesk-ui test`：沒有前端 unit test 檔案；行為驗證由下列 Playwright E2E 執行，不計為 unit test 覆蓋。
-- `vp -C agentdesk-ui run test:e2e`：5 項真實 Chrome CDP E2E 全部通過。Chrome 使用獨立測試 profile，每個案例再使用獨立 browser context。登入 URL／憑證不寫入 trace 或報告。
-- `vp node scripts/build.mjs --all`：Windows、Linux、macOS 各 amd64／arm64 共 6 個 `CGO_ENABLED=0` 執行檔建置成功。
+- `make test-e2e`：6 項真實 Chrome CDP E2E 全部通過，包含 detached start、launcher 結束後仍存活、重用現有 server、重啟恢復及 PID 覆寫。每案例獨立 context，不用個人 profile。
+- `make build-all JOBS=3`：先建置一次 Web，再平行建置 Windows／Linux／macOS 各 amd64／arm64，6 個 `CGO_ENABLED=0` 目標全部成功。
 - `skills/agentdesk/SKILL.md`：skill-creator 的 `quick_validate.py` 驗證通過。
+- Claude 與 Codex 的全域 SKILL.md 已安裝，SHA256 與專案來源相同；兩份 runtime.json 指向同一 `~/.local/bin/agentdesk.exe`，全域 executable 與本機測試 binary SHA256 相同，PATH 能解析到該共享 binary。
+- 實際 Telegram：修正後測試議題 `N-139854d29fa7` 一次嘗試送出，Bot API 確認 message ID 11450；使用者透過頁面 Ack，附註 `LGTM`。一次性 token 不寫入本報告。服務在 launcher 結束後仍可透過已認證 status API 存取，Telegram 啟用中。
 
 交付 `bin/agentdesk.exe` 與 `bin/agentdesk-windows-amd64.exe` 雜湊相同；E2E 使用前者，資產為目前的 Vue production build。
 
@@ -31,7 +33,10 @@
 | Watch 斷線退避、sequence 去重 | CLI 真實 HTTP 測試：暫時 503 後重連，重複 seq 不輸出、後續事件保留 |
 | 人類／agent 權限分離 | HTTP 測試：agent token 不能登入或回覆，不能讀另一專案；actor 由 server 決定，拒絕偽造欄位 |
 | Token 登入與 Web session | E2E 1 fragment 立即清除、cookie HttpOnly；HTTP 測試 rotation／logout 撤銷、Origin 防護 |
+| Telegram 通知與一次性登入連結 | 假 API 測試單次送出、queue 去重、429 退避、unknown 不自動重送、重啟保存及跳過已處理議題；HTTP 測試 token 到期／撤銷／並行兌換／重開已登入連結，另有真實 Telegram 與使用者 LGTM |
+| Detached bootstrap 與 Makefile | 真實 binary 的 start 可初始化、驗證重用、保存設定及在 launcher 結束後持續執行；Make check/test/build-all 已實際執行 |
 | Worktree 共用專案 | 測試建立暫存 Git repo 與 linked worktree，兩者探索到相同資料目錄 |
+| PID 檔生命週期 | Go 測試檢查正常關閉／啟動失敗清理、stale PID 覆寫及鎖不提前釋放；實際程序重啟 E2E 檢查新 PID |
 | 手機／桌面可操作、斷線恢復 | 1440×1000 桌面與 390×844 手機尺寸的實際 Chrome；手機無水平溢出；E2E 4 斷線保留草稿、重連清除錯誤後可再送 |
 | 主題跟隨裝置與持久化 | 專用 E2E 模擬裝置深／淺色變更，驗證預設跟隨、手動覆寫、重新整理保存、恢復跟隨與登入後保留 |
 | Claude Code／Codex 基本整合 | 共用 shell skill 與兩平台安裝路徑已提供，CLI 工作循環已實測；不依賴平台注入 API |
@@ -44,6 +49,6 @@ Desktop 另一個對話的獨立 built-in Browser 檢查也已回報登入、推
 - 實體手機、使用者自己的 VPN、HTTPS 反向代理與防火牆。
 - Linux／macOS 與 arm64 的實機執行；目前只有交叉編譯證據。
 - 以使用者的預設瀏覽器實際啟動 `login --open`；瀏覽器登入流程已由隔離測試驗證，OS 開啟命令由程式依平台提供。
-- Claude Code／Codex 的實際 skill 安裝與宿主排程載入；不宣稱已啟用 `/loop`、goal 或即時注入。
+- Claude Code／Codex 新一輪的 skill 載入與 agent 實際選用的背景 job；安裝與共享 executable 已核對，不宣稱已替兩個宿主啟用 `/loop`、goal 或即時注入。
 
-Hub、Telegram、進階提醒、多使用者、多主同步與 Channels／app-server adapter 均屬後續範圍。
+Hub、Telegram 內回答、進階提醒、多使用者、多主同步與 Channels／app-server adapter 均屬後續範圍。

@@ -18,10 +18,11 @@ import (
 )
 
 type Store struct {
-	DB      *sql.DB
-	Config  Config
-	mu      sync.Mutex
-	changed chan struct{}
+	DB              *sql.DB
+	Config          Config
+	TelegramEnabled bool
+	mu              sync.Mutex
+	changed         chan struct{}
 }
 
 func OpenStore(dir string, c Config) (*Store, error) {
@@ -53,6 +54,8 @@ func OpenStore(dir string, c Config) (*Store, error) {
  CREATE TABLE IF NOT EXISTS receipts (event_id TEXT NOT NULL,consumer TEXT NOT NULL,holder TEXT NOT NULL,at TEXT NOT NULL,PRIMARY KEY(event_id,consumer));
  CREATE TABLE IF NOT EXISTS leases (consumer TEXT PRIMARY KEY,holder TEXT NOT NULL,expires INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY,expires INTEGER NOT NULL);
+ CREATE TABLE IF NOT EXISTS login_links (hash TEXT PRIMARY KEY,issue_id TEXT NOT NULL,expires INTEGER NOT NULL);
+ CREATE TABLE IF NOT EXISTS telegram_notifications (issue_id TEXT PRIMARY KEY,state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next_attempt INTEGER NOT NULL DEFAULT 0,message_id INTEGER NOT NULL DEFAULT 0,last_error TEXT NOT NULL DEFAULT '');
  `)
 	if err == nil {
 		_, err = db.Exec("INSERT OR IGNORE INTO meta(key,value) VALUES('project_id',?)", c.ProjectID)
@@ -171,6 +174,11 @@ func (s *Store) Create(d Draft, key string) (Issue, error) {
 	i.WebURL = s.Config.PublicURL + "/?issue=" + i.ID
 	if err = saveEvent(tx, i, "created", d.CreatedBy); err != nil {
 		return i, err
+	}
+	if s.TelegramEnabled {
+		if _, err = tx.Exec("INSERT INTO telegram_notifications(issue_id,state) VALUES(?,'pending')", i.ID); err != nil {
+			return i, err
+		}
 	}
 	if key != "" {
 		if _, err = tx.Exec("INSERT INTO idempotency(key,digest,issue_id) VALUES(?,?,?)", key, digest(d), i.ID); err != nil {
@@ -485,6 +493,9 @@ func (s *Store) DeleteSession(token string) error {
 }
 func (s *Store) RotateHuman(dir string) error {
 	if _, err := s.DB.Exec("DELETE FROM sessions"); err != nil {
+		return err
+	}
+	if _, err := s.DB.Exec("DELETE FROM login_links"); err != nil {
 		return err
 	}
 	return WriteJSON(filepath.Join(dir, "human.json"), HumanCredential{Token: RandomToken(), ExpiresAt: time.Now().UTC().Add(30 * 24 * time.Hour)})

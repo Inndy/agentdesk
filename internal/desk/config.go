@@ -14,15 +14,23 @@ import (
 )
 
 type Config struct {
-	ProjectID  string `json:"project_id"`
-	Name       string `json:"name"`
-	Endpoint   string `json:"endpoint"`
-	PublicURL  string `json:"public_url"`
-	AgentToken string `json:"agent_token"`
+	Server     ServerDefaults `json:"server,omitempty"`
+	ProjectID  string         `json:"project_id"`
+	Name       string         `json:"name"`
+	Endpoint   string         `json:"endpoint"`
+	PublicURL  string         `json:"public_url"`
+	AgentToken string         `json:"agent_token"`
 }
 type HumanCredential struct {
 	Token     string    `json:"token"`
 	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type ServerDefaults struct {
+	Listen         string `json:"listen,omitempty"`
+	PublicURL      string `json:"public_url,omitempty"`
+	Telegram       bool   `json:"telegram,omitempty"`
+	TelegramConfig string `json:"telegram_config,omitempty"`
 }
 
 func RandomToken() string {
