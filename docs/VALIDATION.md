@@ -4,6 +4,9 @@
 
 ## 已執行
 
+- 公開展示準備：SpiceSharp 五個歷史議題以唯讀方式匯出、移除私人環境資訊，停用 Telegram 在獨立暫存專案重播。1440 px 桌面與 390 px 手機完整頁面截圖已逐張檢查，手機無水平溢位。
+- CI 模式：Windows 上實際使用 Playwright headless Chromium，6 項 E2E 全部通過；沒有依賴 CDP 9222。Go vet／測試、Vite+ check、production build 重新通過；前端 unit test 仍無測試檔案。
+- `.github/workflows/ci.yml`：actionlint v1.7.12 驗證通過，第三方 actions 使用固定 commit SHA。GitHub runner 結果以 repository 的 Actions 頁面為準。
 - `CGO_ENABLED=0 go test ./...`：24 項測試通過，包含資料／HTTP／worktree／PID、NIC 選擇、Telegram outbox、一次性登入連結，以及 CLI／啟動設定。
 - `go vet ./...`：通過。
 - `vp -C agentdesk-ui check`：格式、lint、型別檢查通過。

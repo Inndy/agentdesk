@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CGO_ENABLED: '0'
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: agentdesk-ui
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
+        with:
+          version: '1.3.0'
+          node-version: '26.13.0'
+          working-directory: agentdesk-ui
+          run-install: false
+          cache: true
+      - run: vp install --frozen-lockfile
+      - run: vp check
+      - run: vp test
+      - run: vp run build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-dist
+          path: agentdesk-ui/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  go:
+    needs: web
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: web-dist
+          path: agentdesk-ui/dist
+      - run: go vet ./...
+      - run: go test ./...
+      - run: go build ./cmd/agentdesk
+
+  binaries:
+    needs: web
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: web-dist
+          path: agentdesk-ui/dist
+      - name: Build embedded binary
+        shell: bash
+        run: |
+          suffix=''
+          if [ "$GOOS" = windows ]; then suffix='.exe'; fi
+          mkdir -p bin
+          go build -trimpath -o "bin/agentdesk-$GOOS-$GOARCH$suffix" ./cmd/agentdesk
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agentdesk-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: bin/*
+          if-no-files-found: error
+          retention-days: 14
+
+  browser:
+    needs: web
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
+        with:
+          version: '1.3.0'
+          node-version: '26.13.0'
+          working-directory: agentdesk-ui
+          run-install: false
+          cache: true
+      - run: vp -C agentdesk-ui install --frozen-lockfile
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: web-dist
+          path: agentdesk-ui/dist
+      - run: mkdir -p bin && go build -o bin/agentdesk ./cmd/agentdesk
+      - run: vp -C agentdesk-ui exec playwright install --with-deps chromium
+      - run: vp -C agentdesk-ui run test:e2e

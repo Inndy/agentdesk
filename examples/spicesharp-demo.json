@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "project_name": "SpiceSharp · 示範",
+  "description": "取自 SpiceSharp 的真實議題內容，去除私人環境資訊後重播為待回覆狀態；不包含原始回答、憑證或 session。",
+  "issues": [
+    {
+      "kind": "decision",
+      "title": "確認 idle memory trim（0041）：最小化與影片結束時呼叫 GC.Collect 可以接受嗎？",
+      "context": "【示範重播】以下節錄自 SpiceSharp 的歷史議題，非目前待辦狀態。\n\n0041 在視窗最小化與影片串流結束時執行 SessionMemory.TrimMemory：sc_glz_window_trim、釋放 PixelBuffers、一次 GC.Collect（compacting）。這是 agent 決定、尚未經你 review。GC.Collect 是一次性的（非 timer），代價是當下幾十 ms 的暫停。",
+      "options": [
+        {
+          "id": "accept",
+          "label": "接受",
+          "pros": "最小化後記憶體明顯下降",
+          "cons": "觸發點各有一次 GC 暫停"
+        },
+        {
+          "id": "no-gc",
+          "label": "保留 trim，但不呼叫 GC.Collect",
+          "description": "只釋放 native 與 pool buffer，讓 GC 自己決定。",
+          "pros": "沒有強制暫停",
+          "cons": "managed heap 不會馬上縮"
+        }
+      ],
+      "recommended_option": "accept",
+      "recommendation_reason": "觸發點都在使用者看不到畫面或影片剛結束時，暫停不可見。",
+      "blocking_scope": "0041 定案",
+      "created_by": "SpiceSharp agent",
+      "owner_coordinator": "coordinator"
+    },
+    {
+      "kind": "decision",
+      "title": "Launcher 技術：維持 WinUI 3，還是改 WinForms (.NET 4.8) 或 Win32 AOT？",
+      "context": "【示範重播】以下節錄自 SpiceSharp 的歷史議題，非目前待辦狀態。\n\n你問過改 WinForms 是否更精簡。現況 WinUI 3 + AOT 自帶 runtime，zip 從 3.1 MB 增到約 31 MB（Windows App SDK）。Windows 內建只有 .NET Framework 4.8/4.8.1，現代 .NET 從未內建。我提議過兩種都做 prototype 比較。",
+      "options": [
+        {
+          "id": "winui3",
+          "label": "維持 WinUI 3",
+          "description": "照 spec，繼續開發。",
+          "pros": "已完成、符合 spec、現代外觀",
+          "cons": "zip 大 ~28 MB、冷啟動較慢、Windows App SDK 授權條款較嚴"
+        },
+        {
+          "id": "winforms48",
+          "label": "WinForms on .NET Framework 4.8",
+          "description": "不用 AOT，靠系統內建 runtime。",
+          "pros": "exe 很小、Win10/11 內建可跑",
+          "cons": "舊 runtime、無法用 .NET 10 新 API、與其他元件共用程式碼要多目標編譯；偏離 spec 需你核准"
+        },
+        {
+          "id": "win32aot",
+          "label": "Win32 + AOT（同 viewer）",
+          "description": "手寫 Win32 UI。",
+          "pros": "最小最快、與 viewer 同技術",
+          "cons": "UI 開發成本最高"
+        },
+        {
+          "id": "prototype",
+          "label": "先做 prototype 比較",
+          "description": "WinForms 4.8 與 Win32 AOT 各做一個最小版，量大小與冷啟動後再決定。",
+          "pros": "用數字決定",
+          "cons": "多花一輪工"
+        }
+      ],
+      "recommended_option": "prototype",
+      "recommendation_reason": "大小與冷啟動差異實際量過再決定比較可靠；WinUI 3 版本保留不動。",
+      "blocking_scope": "v1 launcher 後續開發",
+      "created_by": "SpiceSharp agent",
+      "owner_coordinator": "coordinator"
+    },
+    {
+      "kind": "decision",
+      "title": "Serial console 的終端大小要怎麼同步到 guest？",
+      "context": "【示範重播】以下節錄自 SpiceSharp 的歷史議題，非目前待辦狀態。\n\ntermproxy 的 1:C:R: resize 只到 host 端 pty，serial console 的 guest 收不到尺寸。可選：\n- ~r escape：手動按 ~r 時，PveTerm 對 guest 送 `stty rows R cols C` 指令；\n- --auto-stty（opt-in）：每次 resize 自動送 stty 指令（會打到 guest 的前景程式）；\n- QGA guest-exec stty：透過 guest agent 對 ttyS0 設定，不經過終端（需 qemu-guest-agent 與權限）；\n- DEC mode 2048：guest 程式自行要求 in-band resize 通知（需 guest 端支援，目前幾乎沒有）。",
+      "options": [
+        {
+          "id": "tilde-r",
+          "label": "~r 手動送 stty",
+          "pros": "明確、使用者控制、不會誤打",
+          "cons": "要手動"
+        },
+        {
+          "id": "auto-stty",
+          "label": "opt-in --auto-stty",
+          "description": "預設關閉，開啟後 resize 自動送。",
+          "pros": "自動",
+          "cons": "送到前景程式（vim 等）會變成輸入"
+        },
+        {
+          "id": "qga",
+          "label": "QGA guest-exec stty",
+          "pros": "不干擾終端內容",
+          "cons": "需 guest agent 與 VM.Monitor 等權限"
+        },
+        {
+          "id": "tilde-r-plus-auto",
+          "label": "~r 加上 opt-in --auto-stty",
+          "description": "兩者都做。",
+          "pros": "彈性",
+          "cons": "兩條路徑"
+        }
+      ],
+      "recommended_option": "tilde-r-plus-auto",
+      "recommendation_reason": "預設不改變透明性，需要時可手動或自行開啟自動。",
+      "blocking_scope": "PveTerm serial resize",
+      "created_by": "SpiceSharp agent",
+      "owner_coordinator": "coordinator"
+    },
+    {
+      "kind": "decision",
+      "title": "PVE API：有 pinned CA 時，憑證名稱不符合 host 也接受嗎？（0036 Q5 / 0033）",
+      "context": "【示範重播】以下節錄自 SpiceSharp 的歷史議題，非目前待辦狀態。\n\n你的看法：已 pin CA 就可以接受憑證與 host 不符。我的分析：\n好處：PVE 自己的 pve-root-ca 只簽叢集內節點的憑證，信任範圍本來就是整個叢集；用 DNS 別名、reverse proxy、或 SAN 沒列到的 IP 連線時不會失敗。SPICE 那邊本來也是只認 .vv 的 CA + host-subject，不做 hostname 檢查。\n壞處：如果使用者 pin 的是公開 root（例如 ACME 憑證的 ISRG Root X1），略過 host 檢查等於任何拿得到 Let's Encrypt 憑證的人都能 MITM。另外同一 CA 簽的其他節點可冒充彼此（叢集內通常可接受）。\n建議做法：pinned CA 是私有 CA（不在 Windows 受信任根存放區）時略過 host 檢查；是公開 root 時仍檢查 host。",
+      "options": [
+        {
+          "id": "skip-private",
+          "label": "私有 CA 才略過 host 檢查",
+          "description": "pinned CA 不在系統根存放區時只驗 chain；在的話仍驗 host。",
+          "pros": "PVE 自簽 CA 的常見情況都能連；誤 pin 公開 root 時仍安全",
+          "cons": "規則多一層判斷，要寫進 0033"
+        },
+        {
+          "id": "skip-always",
+          "label": "有 pinned CA 一律略過 host 檢查",
+          "description": "你的原始提議。",
+          "pros": "最簡單、行為可預測",
+          "cons": "pin 公開 root 時可被 MITM"
+        },
+        {
+          "id": "keep",
+          "label": "維持現狀：一律檢查 host",
+          "pros": "最保守",
+          "cons": "別名、proxy、SAN 沒列的 IP 會連不上"
+        }
+      ],
+      "recommended_option": "skip-private",
+      "recommendation_reason": "涵蓋你要的情境（PVE 自簽 CA），又不會在使用者 pin 公開 root 時打開 MITM。",
+      "blocking_scope": "Pve.Api TLS 驗證（PveTerm、launcher）",
+      "created_by": "SpiceSharp agent",
+      "owner_coordinator": "coordinator"
+    },
+    {
+      "kind": "action",
+      "title": "請在 win7 試用 status overlay 並回報",
+      "context": "【示範重播】以下節錄自 SpiceSharp 的歷史議題，非目前待辦狀態。\n\n已安裝 9e9a58e 的 viewer，win7 已開啟。按 Ctrl+Alt+Shift+F12（或視窗選單 Show status overlay），在 WMP 播 〈範例影片檔案〉。檢查：video 行顯示 software (FFmpeg)、fps、drops；net 行有頻寬；停止播放約 2 秒後數字停止更新。可選：Video codec 選單切到 MJPEG 比較畫質與頻寬。回覆看到的問題或「OK」。",
+      "blocking_scope": "status overlay 驗收（0044）",
+      "created_by": "SpiceSharp agent",
+      "owner_coordinator": "coordinator"
+    }
+  ]
+}

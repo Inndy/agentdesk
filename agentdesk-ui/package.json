@@ -7,7 +7,8 @@
     "dev": "vp dev",
     "build": "vue-tsc --noEmit && vp build",
     "preview": "vp preview",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "demo:screenshot": "node scripts/demo.mjs"
   },
   "dependencies": {
     "@lucide/vue": "^1.65.0",

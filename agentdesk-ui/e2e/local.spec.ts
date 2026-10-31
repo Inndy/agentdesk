@@ -99,7 +99,10 @@ async function login() {
 }
 
 test.beforeAll(async () => {
-  browser = await chromium.connectOverCDP(process.env.AGENTDESK_CDP_URL ?? "http://127.0.0.1:9222");
+  browser =
+    process.env.CI && !process.env.AGENTDESK_CDP_URL
+      ? await chromium.launch({ headless: true })
+      : await chromium.connectOverCDP(process.env.AGENTDESK_CDP_URL ?? "http://127.0.0.1:9222");
 });
 test.beforeEach(async () => {
   dir = mkdtempSync(path.join(tmpdir(), "agentdesk-e2e-"));
