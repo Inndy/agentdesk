@@ -2,7 +2,17 @@
 
 日期：2026-10-31。環境：Windows amd64、Go 1.27.2、Vite+ 1.3.0。自動測試使用暫存專案、localhost 與假的 Telegram API；另外依使用者明確授權，使用既有 tg-notify secret 對個人 Telegram 執行實際通知驗證。
 
-## 已執行
+## 英文介面與雙語文件
+
+- `README.md` 為英文首頁，`README.zh-TW.md` 保留繁體中文，兩份均有語言切換連結與對應介面截圖。
+- `vp -C agentdesk-ui check`：格式、lint、型別檢查通過；正式 Web 與 Windows amd64 單一執行檔建置通過。
+- `vp -C agentdesk-ui test`：新增 4 項單元測試，涵蓋瀏覽器語言協商、明確偏好與 fallback，以及英文單複數和繁體中文等待時間格式。
+- Playwright headless Chromium：10 項 E2E 通過。原有 6 項繁體中文流程保留，另驗證英文決策回覆、Action Ack、手機版面、草稿與選項在語言切換後保留、偏好重新載入與跨分頁同步，以及登入錯誤即時切換語言。
+- 回覆後顯示「下一個待回覆議題」：手機測試驗證中英文按鈕、清單搜尋不阻擋後續議題、略過稍後處理／撤銷／已回答的項目、切換後聚焦標題並捲回頁頂、原始回答持久保存，以及無其他待回覆議題時顯示完成提示與返回收件匣。
+- 手機長文字回歸：修正前，390 px 的 mobile viewport 被長標題／路徑撐到 2933 px；修正 grid track、換行與欄位最小寬度後，在 320／375／390／430 px 驗證收件匣、議題詳情、選項與已保存回答均無水平溢位，初始 visual viewport scale 為 1。手機文字輸入、textarea 與 select 的 computed font size 至少為 16 px；這是 mobile Chromium 模擬證據，未宣稱實體 iOS 鍵盤驗證。
+- 英文／繁體中文示範截圖均在獨立暫存專案產生；議題內容保留原文。
+
+## 初版已執行
 
 - 公開展示準備：SpiceSharp 五個歷史議題以唯讀方式匯出、移除私人環境資訊，停用 Telegram 在獨立暫存專案重播。1440 px 桌面與 390 px 手機完整頁面截圖已逐張檢查，手機無水平溢位。
 - CI 模式：Windows 上實際使用 Playwright headless Chromium，6 項 E2E 全部通過；沒有依賴 CDP 9222。Go vet／測試、Vite+ check、production build 重新通過；前端 unit test 仍無測試檔案。

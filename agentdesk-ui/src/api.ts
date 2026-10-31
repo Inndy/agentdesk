@@ -73,8 +73,9 @@ export async function api<T>(path: string, body?: unknown, method?: string): Pro
   });
   const envelope = await response.json();
   if (!response.ok) {
-    throw new ApiError(response.status, envelope.code, envelope.error ?? "服務發生錯誤");
+    throw new ApiError(response.status, envelope.code, envelope.error ?? "Service error");
   }
-  if (envelope.schema_version !== 1) throw new Error("不支援的服務版本");
+  if (envelope.schema_version !== 1)
+    throw new ApiError(503, "schema_version", "Unsupported service version");
   return envelope.data as T;
 }

@@ -10,6 +10,8 @@ const binary =
   process.env.AGENTDESK_BINARY ||
   path.join(root, "bin", process.platform === "win32" ? "agentdesk.exe" : "agentdesk");
 const fixture = JSON.parse(readFileSync(path.join(root, "examples/spicesharp-demo.json"), "utf8"));
+const locale = process.env.AGENTDESK_DEMO_LOCALE === "en" ? "en" : "zh-TW";
+const suffix = locale === "en" ? "-en" : "";
 const dir = mkdtempSync(path.join(tmpdir(), "agentdesk-demo-"));
 const output = path.join(root, "docs/images");
 mkdirSync(output, { recursive: true });
@@ -51,6 +53,7 @@ try {
       ? await chromium.launch({ headless: true })
       : await chromium.connectOverCDP(process.env.AGENTDESK_CDP_URL || "http://127.0.0.1:9222");
   context = await browser.newContext({
+    locale,
     viewport: { width: 1440, height: 1100 },
     colorScheme: "dark",
   });
@@ -62,18 +65,24 @@ try {
   } catch {
     throw new Error("Could not load the isolated demo login.");
   }
-  const detail = page.getByRole("region", { name: "議題詳情" });
+  const detail = page.getByRole("region", { name: locale === "en" ? "Issue details" : "議題詳情" });
   await detail.getByRole("heading", { name: issues[0].title, exact: true }).waitFor();
   if (new URL(page.url()).hash) throw new Error("Login token was not cleared.");
   await page.evaluate(() => document.fonts.ready);
-  await page.screenshot({ path: path.join(output, "spicesharp-desktop.png"), fullPage: true });
+  await page.screenshot({
+    path: path.join(output, `spicesharp-desktop${suffix}.png`),
+    fullPage: true,
+  });
   const action = issues.find((issue) => issue.kind === "action");
   await page.goto(`${endpoint}/?issue=${action.issue_id}`);
   await page.setViewportSize({ width: 390, height: 844 });
   await detail.getByRole("heading", { name: action.title, exact: true }).waitFor();
   if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth))
     throw new Error("Mobile demo overflows horizontally.");
-  await page.screenshot({ path: path.join(output, "spicesharp-mobile.png"), fullPage: true });
+  await page.screenshot({
+    path: path.join(output, `spicesharp-mobile${suffix}.png`),
+    fullPage: true,
+  });
   console.log("Captured desktop/mobile demo screenshots from isolated SpiceSharp replay.");
 } finally {
   await context?.close();

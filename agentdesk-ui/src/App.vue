@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
-import { ArrowLeft, Check, CircleHelp, Inbox, LogOut, RefreshCw } from "@lucide/vue";
+import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
+import { ArrowLeft, ArrowRight, Check, CircleHelp, Inbox, LogOut, RefreshCw } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
 import { api, ApiError, type History, type Issue, type Session } from "./api";
 import { useTheme } from "./theme";
+import { useLanguage, formatWaiting, type MessageKey } from "./i18n";
 
 const session = ref<Session | null>(null);
 const issues = ref<Issue[]>([]);
@@ -12,8 +13,8 @@ const history = ref<History[]>([]);
 const token = ref("");
 const selectedOption = ref("");
 const answer = ref("");
-const error = ref("");
-const notice = ref("");
+const error = ref<MessageKey | "">("");
+const notice = ref<MessageKey | "">("");
 const busy = ref(false);
 const loading = ref(true);
 const online = ref(false);
@@ -21,25 +22,36 @@ const connectionError = ref(false);
 const filter = ref("pending");
 const search = ref("");
 const { theme, setTheme } = useTheme();
+const { language, locale, text, setLanguage } = useLanguage();
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
 let selectionRequest = 0;
 
-const kinds = { decision: "需要決議", action: "需要處理", notice: "通知" };
-const statuses = {
-  pending: "待回覆",
-  answered: "已回答",
-  acked: "已確認收到",
-  withdrawn: "已撤銷",
-};
-const eventNames: Record<string, string> = {
-  created: "建立議題",
-  updated: "修改議題",
-  answered: "人類已回答",
-  acked: "人類已確認收到",
-  withdrawn: "撤銷議題",
-  deferred: "調整稍後處理標記",
-};
+const kinds = computed(() => ({
+  decision: text.value.decision,
+  action: text.value.action,
+  notice: text.value.notice,
+}));
+const statuses = computed(() => ({
+  pending: text.value.pending,
+  answered: text.value.answered,
+  acked: text.value.acked,
+  withdrawn: text.value.withdrawn,
+}));
+const eventNames = computed<Record<string, string>>(() => ({
+  created: text.value.createdEvent,
+  updated: text.value.updatedEvent,
+  answered: text.value.answeredEvent,
+  acked: text.value.ackedEvent,
+  withdrawn: text.value.withdrawnEvent,
+  deferred: text.value.deferredEvent,
+}));
 const pendingCount = computed(() => issues.value.filter((i) => i.status === "pending").length);
+const nextPending = computed(() =>
+  issues.value.find(
+    (issue) =>
+      issue.status === "pending" && !issue.deferred && issue.issue_id !== selected.value?.issue_id,
+  ),
+);
 const visibleIssues = computed(() =>
   issues.value.filter((i) => {
     const matchesFilter =
@@ -58,16 +70,11 @@ const canReply = computed(() =>
 );
 
 function date(value: string) {
-  return new Date(value).toLocaleString("zh-TW", { hour12: false });
+  return new Date(value).toLocaleString(locale.value, { hour12: false });
 }
 
 function waiting(value: string) {
-  const minutes = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 60000));
-  return minutes < 60
-    ? `${minutes} 分鐘`
-    : minutes < 1440
-      ? `${Math.floor(minutes / 60)} 小時`
-      : `${Math.floor(minutes / 1440)} 天`;
+  return formatWaiting(value, locale.value);
 }
 
 function handleError(e: unknown) {
@@ -78,9 +85,21 @@ function handleError(e: unknown) {
     issues.value = [];
     selected.value = null;
     history.value = [];
-    error.value = "登入已失效，請重新開啟登入網址或輸入 token。";
+    error.value = "sessionExpired";
+  } else if (e instanceof ApiError) {
+    const messages: Partial<Record<string, MessageKey>> = {
+      schema_version: "versionError",
+      not_found: "notFound",
+      origin: "forbidden",
+      conflict: "conflict",
+      lease_conflict: "conflict",
+      invalid_request: "invalidRequest",
+      invalid_json: "invalidRequest",
+      content_type: "invalidRequest",
+    };
+    error.value = messages[e.code] ?? "serviceError";
   } else {
-    error.value = e instanceof Error ? e.message : "無法連線，請確認本機服務與 VPN。";
+    error.value = "connectionError";
   }
 }
 
@@ -126,6 +145,22 @@ function closeIssue() {
   const url = new URL(location.href);
   url.searchParams.delete("issue");
   window.history.replaceState(null, "", url);
+}
+
+async function openNextIssue() {
+  const next = nextPending.value;
+  if (!next || busy.value) return;
+  busy.value = true;
+  try {
+    await selectIssue(next.issue_id);
+    if (selected.value?.issue_id === next.issue_id) {
+      await nextTick();
+      document.getElementById("issue-title")?.focus({ preventScroll: true });
+      window.scrollTo({ top: 0, behavior: "auto" });
+    }
+  } finally {
+    busy.value = false;
+  }
 }
 
 async function login() {
@@ -181,12 +216,12 @@ async function mutate(defer = false) {
         };
     selected.value = await api<Issue>(path, body);
     history.value = await api<History[]>(`/issues/${issue.issue_id}/history`);
-    notice.value = defer ? "已更新稍後處理標記。" : "回覆已保存，等待 coordinator 接手。";
+    notice.value = defer ? "deferSaved" : "replySaved";
     await refresh();
   } catch (e) {
     if (e instanceof ApiError && e.status === 409) {
       await selectIssue(issue.issue_id);
-      error.value = "議題版本或狀態已改變。已載入最新內容，請重新確認後再送出。";
+      error.value = "conflict";
       await refresh();
     } else {
       handleError(e);
@@ -225,60 +260,74 @@ onUnmounted(() => clearInterval(refreshTimer));
 <template>
   <div class="min-h-svh bg-background text-foreground">
     <header class="border-b bg-card">
-      <div class="mx-auto flex max-w-7xl items-center gap-3 px-4 py-4 sm:px-8">
+      <div class="mx-auto flex max-w-7xl flex-wrap items-center gap-3 px-4 py-4 sm:px-8">
         <div
           class="flex size-9 items-center justify-center rounded-xl bg-primary text-primary-foreground"
         >
           <Inbox class="size-5" aria-hidden="true" />
         </div>
-        <div>
+        <div class="min-w-0 flex-1 sm:flex-none">
           <h1 class="font-semibold tracking-tight">Agentdesk</h1>
-          <p class="text-xs text-muted-foreground">{{ session?.name ?? "人類議題收件匣" }}</p>
+          <p class="truncate text-xs text-muted-foreground">{{ session?.name ?? text.tagline }}</p>
         </div>
         <div
           v-if="session"
           class="ml-auto flex items-center gap-2 text-xs text-muted-foreground"
           role="status"
-          :aria-label="online ? '已連線' : '連線中斷'"
+          :aria-label="online ? text.connected : text.disconnected"
         >
           <span class="size-2 rounded-full" :class="online ? 'bg-emerald-500' : 'bg-amber-500'" />
-          <span class="hidden sm:inline">{{ online ? "已連線" : "連線中斷" }}</span>
+          <span class="hidden sm:inline">{{ online ? text.connected : text.disconnected }}</span>
         </div>
-        <select
-          :value="theme"
-          aria-label="顯示模式"
-          class="h-9 w-28 rounded-md border bg-background px-2 text-sm"
-          :class="!session && 'ml-auto'"
-          @change="setTheme(($event.target as HTMLSelectElement).value)"
+        <div
+          class="flex w-full items-center justify-end gap-2 sm:w-auto"
+          :class="!session && 'sm:ml-auto'"
         >
-          <option value="system">跟隨裝置</option>
-          <option value="dark">深色模式</option>
-          <option value="light">淺色模式</option>
-        </select>
-        <Button
-          v-if="session"
-          variant="ghost"
-          size="icon"
-          aria-label="登出"
-          :disabled="busy"
-          @click="logout"
-          ><LogOut aria-hidden="true"
-        /></Button>
+          <select
+            :value="language"
+            :aria-label="text.language"
+            class="h-9 min-w-0 flex-1 rounded-md border bg-background px-2 text-base sm:w-36 sm:flex-none sm:text-sm"
+            @change="setLanguage(($event.target as HTMLSelectElement).value)"
+          >
+            <option value="system">{{ text.systemLanguage }}</option>
+            <option value="en">English</option>
+            <option value="zh-TW">繁體中文</option>
+          </select>
+          <select
+            :value="theme"
+            :aria-label="text.theme"
+            class="h-9 min-w-0 flex-1 rounded-md border bg-background px-2 text-base sm:w-36 sm:flex-none sm:text-sm"
+            @change="setTheme(($event.target as HTMLSelectElement).value)"
+          >
+            <option value="system">{{ text.systemTheme }}</option>
+            <option value="dark">{{ text.darkTheme }}</option>
+            <option value="light">{{ text.lightTheme }}</option>
+          </select>
+          <Button
+            v-if="session"
+            variant="ghost"
+            size="icon"
+            :aria-label="text.logout"
+            :disabled="busy"
+            @click="logout"
+            ><LogOut aria-hidden="true"
+          /></Button>
+        </div>
       </div>
     </header>
 
     <main v-if="loading" class="p-12 text-center text-muted-foreground" role="status">
-      正在連線…
+      {{ text.connecting }}
     </main>
 
     <main v-else-if="!session" class="mx-auto max-w-md px-6 py-20">
       <div class="rounded-2xl border bg-card p-6 shadow-sm sm:p-8">
-        <h2 class="text-2xl font-semibold tracking-tight">登入收件匣</h2>
+        <h2 class="text-2xl font-semibold tracking-tight">{{ text.loginHeading }}</h2>
         <p class="mt-3 text-sm leading-6 text-muted-foreground">
-          在電腦執行 agentdesk login，開啟產生的登入網址，或在下方輸入人類登入 token。
+          {{ text.loginHelp }}
         </p>
         <form class="mt-6 space-y-4" @submit.prevent="login">
-          <label for="token" class="block text-sm font-medium">登入 token</label>
+          <label for="token" class="block text-sm font-medium">{{ text.loginToken }}</label>
           <input
             id="token"
             v-model="token"
@@ -288,14 +337,14 @@ onUnmounted(() => clearInterval(refreshTimer));
             required
             :disabled="busy"
           />
-          <p v-if="error" class="text-sm text-destructive" role="alert">{{ error }}</p>
+          <p v-if="error" class="text-sm text-destructive" role="alert">{{ text[error] }}</p>
           <Button type="submit" class="w-full" :disabled="busy || !token.trim()">{{
-            busy ? "登入中…" : "登入"
+            busy ? text.signingIn : text.signIn
           }}</Button>
         </form>
       </div>
       <p class="mt-5 text-center text-xs leading-5 text-muted-foreground">
-        手機請先連上 VPN，再開啟電腦產生的內網登入網址。
+        {{ text.vpnHelp }}
       </p>
     </main>
 
@@ -305,40 +354,51 @@ onUnmounted(() => clearInterval(refreshTimer));
         class="mb-5 rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
         role="alert"
       >
-        {{ error }}
+        {{ text[error] }}
       </div>
       <div
         v-if="notice"
         class="mb-5 rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-4 text-sm"
         role="status"
       >
-        {{ notice }}
+        {{ text[notice] }}
       </div>
-      <div class="grid gap-6 lg:grid-cols-[340px_minmax(0,1fr)]">
-        <section :class="selected ? 'hidden lg:block' : ''" aria-label="議題清單">
+      <div class="grid grid-cols-1 gap-6 lg:grid-cols-[340px_minmax(0,1fr)]">
+        <section
+          class="min-w-0 [overflow-wrap:anywhere]"
+          :class="selected ? 'hidden lg:block' : ''"
+          :aria-label="text.issueList"
+        >
           <div class="mb-5 flex items-center justify-between">
             <div>
-              <h2 class="text-2xl font-semibold tracking-tight">收件匣</h2>
-              <p class="mt-1 text-sm text-muted-foreground">{{ pendingCount }} 個議題等待你回覆</p>
+              <h2 class="text-2xl font-semibold tracking-tight">{{ text.inbox }}</h2>
+              <p class="mt-1 text-sm text-muted-foreground">
+                {{
+                  (pendingCount === 1 ? text.pendingOne : text.pendingMany).replace(
+                    "{count}",
+                    String(pendingCount),
+                  )
+                }}
+              </p>
             </div>
-            <Button variant="outline" size="icon" aria-label="重新整理清單" @click="refresh"
+            <Button variant="outline" size="icon" :aria-label="text.refreshList" @click="refresh"
               ><RefreshCw aria-hidden="true"
             /></Button>
           </div>
-          <label for="search" class="sr-only">搜尋議題</label>
+          <label for="search" class="sr-only">{{ text.search }}</label>
           <input
             id="search"
             v-model="search"
             type="search"
-            placeholder="搜尋標題、內容或 ID"
+            :placeholder="text.searchPlaceholder"
             class="field mb-3"
           />
-          <div class="mb-5 flex gap-1 rounded-lg bg-muted p-1" aria-label="清單篩選">
+          <div class="mb-5 flex gap-1 rounded-lg bg-muted p-1" :aria-label="text.filter">
             <Button
               v-for="tab in [
-                { id: 'pending', label: '待回覆' },
-                { id: 'deferred', label: '稍後處理' },
-                { id: 'all', label: '全部' },
+                { id: 'pending', label: text.pending },
+                { id: 'deferred', label: text.deferred },
+                { id: 'all', label: text.all },
               ]"
               :key="tab.id"
               :variant="filter === tab.id ? 'secondary' : 'ghost'"
@@ -361,8 +421,10 @@ onUnmounted(() => clearInterval(refreshTimer));
             >
               <div class="flex items-center gap-2 text-xs text-muted-foreground">
                 <span class="badge">{{ kinds[issue.kind] }}</span
-                ><span v-if="issue.priority === 'high'" class="text-amber-600 dark:text-amber-400"
-                  >高優先度</span
+                ><span
+                  v-if="issue.priority === 'high'"
+                  class="text-amber-600 dark:text-amber-400"
+                  >{{ text.highPriority }}</span
                 ><span class="ml-auto">{{ waiting(issue.created_at) }}</span>
               </div>
               <h3 class="mt-3 break-words font-medium leading-6">{{ issue.title }}</h3>
@@ -379,19 +441,23 @@ onUnmounted(() => clearInterval(refreshTimer));
             >
               <Check class="mx-auto mb-3 size-6 text-muted-foreground" aria-hidden="true" />
               <p class="text-sm font-medium">
-                {{ search ? "沒有符合的議題" : "目前沒有這類議題" }}
+                {{ search ? text.noMatches : text.noIssues }}
               </p>
               <p class="mt-2 text-xs leading-5 text-muted-foreground">
-                Agent 建立的議題會自動出現在這裡。
+                {{ text.emptyHelp }}
               </p>
             </div>
           </div>
         </section>
 
-        <section v-if="selected" class="min-w-0 rounded-2xl border bg-card" aria-label="議題詳情">
+        <section
+          v-if="selected"
+          class="min-w-0 rounded-2xl border bg-card [overflow-wrap:anywhere]"
+          :aria-label="text.issueDetails"
+        >
           <div class="border-b p-5 sm:p-7">
             <Button variant="ghost" size="sm" class="-ml-2 mb-4 lg:hidden" @click="closeIssue"
-              ><ArrowLeft aria-hidden="true" />返回清單</Button
+              ><ArrowLeft aria-hidden="true" />{{ text.back }}</Button
             >
             <div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <span class="badge">{{ kinds[selected.kind] }}</span
@@ -399,7 +465,11 @@ onUnmounted(() => clearInterval(refreshTimer));
               ><span>v{{ selected.revision }}</span
               ><span class="ml-auto">{{ statuses[selected.status] }}</span>
             </div>
-            <h2 class="mt-4 break-words text-2xl font-semibold leading-snug tracking-tight">
+            <h2
+              id="issue-title"
+              tabindex="-1"
+              class="mt-4 break-words text-2xl font-semibold leading-snug tracking-tight"
+            >
               {{ selected.title }}
             </h2>
             <p class="mt-3 text-xs text-muted-foreground">
@@ -408,37 +478,37 @@ onUnmounted(() => clearInterval(refreshTimer));
           </div>
           <div class="space-y-6 p-5 sm:p-7">
             <section v-if="selected.context">
-              <h3 class="section-label">背景</h3>
+              <h3 class="section-label">{{ text.background }}</h3>
               <p class="mt-2 whitespace-pre-wrap break-words text-sm leading-7">
                 {{ selected.context }}
               </p>
             </section>
             <div v-if="selected.blocking_scope" class="rounded-lg bg-muted p-4">
-              <h3 class="section-label">影響與阻擋範圍</h3>
+              <h3 class="section-label">{{ text.blockingScope }}</h3>
               <p class="mt-2 whitespace-pre-wrap break-words text-sm">
                 {{ selected.blocking_scope }}
               </p>
             </div>
             <dl class="grid grid-cols-2 gap-3 text-xs">
               <div>
-                <dt class="text-muted-foreground">接手者</dt>
+                <dt class="text-muted-foreground">{{ text.coordinator }}</dt>
                 <dd class="mt-1 break-all">{{ selected.owner_coordinator }}</dd>
               </div>
               <div v-if="selected.task_ref">
-                <dt class="text-muted-foreground">工作項目</dt>
+                <dt class="text-muted-foreground">{{ text.task }}</dt>
                 <dd class="mt-1 break-all">{{ selected.task_ref }}</dd>
               </div>
               <div v-if="selected.branch">
-                <dt class="text-muted-foreground">分支</dt>
+                <dt class="text-muted-foreground">{{ text.branch }}</dt>
                 <dd class="mt-1 break-all">{{ selected.branch }}</dd>
               </div>
               <div v-if="selected.origin_session">
-                <dt class="text-muted-foreground">來源 session</dt>
+                <dt class="text-muted-foreground">{{ text.originSession }}</dt>
                 <dd class="mt-1 break-all">{{ selected.origin_session }}</dd>
               </div>
             </dl>
             <section v-if="selected.related_documents?.length">
-              <h3 class="section-label">相關文件</h3>
+              <h3 class="section-label">{{ text.documents }}</h3>
               <ul class="mt-2 space-y-1 text-sm">
                 <li v-for="doc in selected.related_documents" :key="doc" class="break-all">
                   {{ doc }}
@@ -454,9 +524,9 @@ onUnmounted(() => clearInterval(refreshTimer));
               <fieldset
                 v-if="selected.kind === 'decision' && selected.options?.length"
                 :disabled="busy"
-                class="space-y-3"
+                class="min-w-0 space-y-3"
               >
-                <legend class="section-label mb-3">選擇方案，或在下方自由回答</legend>
+                <legend class="section-label mb-3">{{ text.chooseOption }}</legend>
                 <label
                   v-for="option in selected.options"
                   :key="option.id"
@@ -473,9 +543,9 @@ onUnmounted(() => clearInterval(refreshTimer));
                   <span class="min-w-0 space-y-2 text-sm"
                     ><span class="block font-medium"
                       >{{ option.label }}
-                      <span v-if="option.id === selected.recommended_option" class="badge ml-1"
-                        >Agent 建議</span
-                      ></span
+                      <span v-if="option.id === selected.recommended_option" class="badge ml-1">{{
+                        text.recommended
+                      }}</span></span
                     ><span
                       v-if="option.description"
                       class="block whitespace-pre-wrap leading-6 text-muted-foreground"
@@ -483,11 +553,11 @@ onUnmounted(() => clearInterval(refreshTimer));
                     ><span
                       v-if="option.pros"
                       class="block whitespace-pre-wrap text-muted-foreground"
-                      >優點：{{ option.pros }}</span
+                      >{{ text.pros }}{{ option.pros }}</span
                     ><span
                       v-if="option.cons"
                       class="block whitespace-pre-wrap text-muted-foreground"
-                      >代價：{{ option.cons }}</span
+                      >{{ text.cons }}{{ option.cons }}</span
                     ></span
                   >
                 </label>
@@ -496,19 +566,21 @@ onUnmounted(() => clearInterval(refreshTimer));
                   type="button"
                   variant="ghost"
                   size="sm"
+                  class="h-auto max-w-full whitespace-normal text-left"
                   @click="selectedOption = ''"
-                  >清除選擇，改用自由回答</Button
+                  >{{ text.clearSelection }}</Button
                 >
               </fieldset>
               <p
                 v-if="selected.recommendation_reason"
                 class="rounded-lg bg-muted p-4 text-sm leading-6"
               >
-                <strong class="font-medium">推薦理由：</strong>{{ selected.recommendation_reason }}
+                <strong class="font-medium">{{ text.recommendationReason }}</strong
+                >{{ selected.recommendation_reason }}
               </p>
               <div>
                 <label for="answer" class="section-label">{{
-                  selected.kind === "decision" ? "你的回答或補充說明" : "附註（選填）"
+                  selected.kind === "decision" ? text.answer : text.note
                 }}</label
                 ><textarea
                   id="answer"
@@ -517,9 +589,7 @@ onUnmounted(() => clearInterval(refreshTimer));
                   class="field mt-2 resize-y"
                   :disabled="busy"
                   :placeholder="
-                    selected.kind === 'decision'
-                      ? '也可以提出自己的方案…'
-                      : '補充需要讓 agent 知道的資訊…'
+                    selected.kind === 'decision' ? text.answerPlaceholder : text.notePlaceholder
                   "
                 />
               </div>
@@ -527,14 +597,14 @@ onUnmounted(() => clearInterval(refreshTimer));
                 v-if="selected.kind !== 'decision'"
                 class="text-xs leading-5 text-muted-foreground"
               >
-                「確認收到」只表示你已收到此事項，不代表外部操作已完成。
+                {{ text.ackHelp }}
               </p>
               <div class="flex flex-wrap gap-3">
                 <Button type="submit" :disabled="busy || !canReply">{{
-                  busy ? "保存中…" : selected.kind === "decision" ? "送出回答" : "確認收到"
+                  busy ? text.saving : selected.kind === "decision" ? text.submit : text.acknowledge
                 }}</Button
                 ><Button type="button" variant="outline" :disabled="busy" @click="mutate(true)">{{
-                  selected.deferred ? "移回待回覆" : "稍後處理"
+                  selected.deferred ? text.restore : text.defer
                 }}</Button>
               </div>
             </form>
@@ -544,10 +614,11 @@ onUnmounted(() => clearInterval(refreshTimer));
               class="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-5"
             >
               <h3 class="font-medium">
-                {{ selected.reply.ack ? "已確認收到" : "已保存你的回答" }}
+                {{ selected.reply.ack ? text.acked : text.answerSaved }}
               </h3>
               <p v-if="selected.reply.option_id" class="mt-3 text-sm">
-                選擇：{{
+                {{ text.selectedOption
+                }}{{
                   selected.options?.find((o) => o.id === selected!.reply!.option_id)?.label ??
                   selected.reply.option_id
                 }}
@@ -568,21 +639,36 @@ onUnmounted(() => clearInterval(refreshTimer));
                       (e.kind === "answered" || e.kind === "acked") &&
                       e.receipts.some((r) => r.consumer === selected!.owner_coordinator),
                   )
-                    ? "Coordinator 已接手；後續工作完成與否由專案追蹤。"
-                    : "等待 coordinator 接手。"
+                    ? text.handedOff
+                    : text.awaitingHandoff
                 }}
               </p>
             </section>
 
+            <div v-if="selected.reply" class="space-y-3">
+              <Button
+                v-if="nextPending"
+                type="button"
+                class="h-auto min-h-11 w-full whitespace-normal sm:w-auto"
+                :disabled="busy || !online"
+                @click="openNextIssue"
+                >{{ text.nextPending }}<ArrowRight aria-hidden="true"
+              /></Button>
+              <p v-else class="text-sm text-muted-foreground">{{ text.noMorePending }}</p>
+              <Button v-if="!nextPending" type="button" variant="outline" @click="closeIssue">{{
+                text.backToInbox
+              }}</Button>
+            </div>
+
             <section class="border-t pt-6">
               <div class="flex items-center justify-between">
-                <h3 class="section-label">歷史與交付狀態</h3>
+                <h3 class="section-label">{{ text.history }}</h3>
                 <Button
                   variant="ghost"
                   size="sm"
                   :disabled="busy"
                   @click="selectIssue(selected.issue_id)"
-                  ><RefreshCw aria-hidden="true" />更新詳情</Button
+                  ><RefreshCw aria-hidden="true" />{{ text.refreshDetails }}</Button
                 >
               </div>
               <ol class="mt-4 space-y-4">
@@ -599,7 +685,8 @@ onUnmounted(() => clearInterval(refreshTimer));
                     :key="receipt.consumer"
                     class="mt-2 break-all text-xs text-emerald-700 dark:text-emerald-400"
                   >
-                    {{ receipt.consumer }} 已接手 · {{ date(receipt.at) }} · {{ receipt.holder }}
+                    {{ receipt.consumer }} {{ text.received }} · {{ date(receipt.at) }} ·
+                    {{ receipt.holder }}
                   </p>
                 </li>
               </ol>
@@ -611,9 +698,9 @@ onUnmounted(() => clearInterval(refreshTimer));
           class="hidden min-h-[540px] flex-col items-center justify-center rounded-2xl border border-dashed p-8 text-center lg:flex"
         >
           <CircleHelp class="mb-4 size-10 text-muted-foreground" aria-hidden="true" />
-          <h2 class="font-medium">把需要你決定的事，留在這裡。</h2>
+          <h2 class="font-medium">{{ text.welcomeHeading }}</h2>
           <p class="mt-3 max-w-sm text-sm leading-6 text-muted-foreground">
-            從左側選擇議題，查看背景、回答問題，或確認收到通知。Agent 可以同時繼續其他工作。
+            {{ text.welcomeHelp }}
           </p>
         </section>
       </div>

@@ -72,7 +72,7 @@
 
 @layer components {
   .field {
-    @apply w-full rounded-lg border bg-background px-3 py-2.5 text-sm shadow-xs outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-50;
+    @apply w-full min-w-0 rounded-lg border bg-background px-3 py-2.5 text-base shadow-xs outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-50 sm:text-sm;
   }
   .badge {
     @apply inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground;

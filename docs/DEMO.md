@@ -27,6 +27,8 @@ vp -C agentdesk-ui run demo:screenshot
 
 可用 `AGENTDESK_CDP_URL` 指定 CDP 端點，或用 `AGENTDESK_BINARY` 指定另一個執行檔。設定 `CI=true` 且不提供 CDP 端點時，使用 Playwright 自己啟動的 headless Chromium；先執行 `vp -C agentdesk-ui exec playwright install chromium` 安裝瀏覽器。
 
+預設產生繁體中文介面截圖。設定 `AGENTDESK_DEMO_LOCALE=en` 後執行同一指令，會產生英文介面版本，檔名加上 `-en`；議題正文仍保留來源的原文。
+
 腳本建立獨立的系統暫存資料目錄，服務只監聽隨機 localhost port，明確停用 Telegram。登入資訊只在記憶體中使用，網址 token 清除後才截圖，不錄製 trace 或影片；完成後關閉腳本自己的瀏覽器 context 與服務。暫存目錄保留在 OS 暫存區，不會寫入正式專案資料。
 
 輸出：

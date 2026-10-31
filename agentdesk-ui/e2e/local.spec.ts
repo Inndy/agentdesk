@@ -84,7 +84,7 @@ async function stopService() {
   }
 }
 
-async function login() {
+async function login(inboxHeading = "收件匣") {
   const credential = JSON.parse(readFileSync(path.join(dir, "human.json"), "utf8"));
   // Simulate opening a login link in a fresh document, even if already at /.
   await page.goto("about:blank");
@@ -94,7 +94,7 @@ async function login() {
   } catch {
     throw new Error("could not navigate to test service login");
   }
-  await expect(page.getByRole("heading", { name: "收件匣", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: inboxHeading, exact: true })).toBeVisible();
   expect(new URL(page.url()).hash).toBe("");
 }
 
@@ -109,6 +109,7 @@ test.beforeEach(async () => {
   cli("init", "--name", "E2E 專案");
   await startService();
   context = await browser.newContext({
+    locale: "zh-TW",
     viewport: test.info().title.includes("手機")
       ? { width: 390, height: 844 }
       : { width: 1440, height: 1000 },
@@ -291,6 +292,230 @@ test("斷線保留未送出回答，恢復連線後可重試", async () => {
   await page.getByRole("button", { name: "送出回答", exact: true }).click();
   await expect(page.getByRole("heading", { name: "已保存你的回答" })).toBeVisible();
   expect(cli("get", issue.issue_id).reply.text).toBe("斷線時保留這段回答");
+});
+
+test("英文介面切換保留草稿、回答與手機 Ack", async () => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const decision = create("decision", "Choose a transport", true);
+  const action = create("action", "Verify the status overlay");
+  await page.goto(endpoint);
+  await page.getByRole("combobox", { name: "語言", exact: true }).selectOption("en");
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await login("Inbox");
+  await expect(page.getByText("2 issues awaiting your reply", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /Choose a transport/ }).click();
+  let detail = page.getByRole("region", { name: "Issue details", exact: true });
+  await expect(detail.getByText("Agent recommendation", { exact: true })).toBeVisible();
+  await expect(detail.getByRole("radio").first()).not.toBeChecked();
+  await expect(detail.getByRole("button", { name: "Submit answer", exact: true })).toBeDisabled();
+  await detail.getByRole("radio").first().check();
+  const draft = "Keep this draft / 保留原文";
+  await page.getByLabel("Your answer or additional context", { exact: true }).fill(draft);
+  await page.getByRole("combobox", { name: "Language", exact: true }).selectOption("zh-TW");
+  await expect(page.getByLabel("你的回答或補充說明")).toHaveValue(draft);
+  await expect(page.getByRole("radio").first()).toBeChecked();
+  await page.getByRole("combobox", { name: "語言", exact: true }).selectOption("en");
+  await expect(page.getByLabel("Your answer or additional context", { exact: true })).toHaveValue(
+    draft,
+  );
+  // Issue content is never translated by the interface.
+  await expect(
+    detail.getByText("這是本機端到端驗證，不涉及外部操作。", { exact: true }),
+  ).toBeVisible();
+  await page.screenshot({ path: "../artifacts/english-desktop.png", fullPage: true });
+  await detail.getByRole("button", { name: "Submit answer", exact: true }).click();
+  await expect(detail.getByRole("heading", { name: "Your answer has been saved" })).toBeVisible();
+  await expect(detail.getByText(/Human answered.*v1/)).toBeVisible();
+  expect(cli("get", decision.issue_id).reply.text).toBe(draft);
+  await page.reload();
+  await expect(page.getByRole("combobox", { name: "Language", exact: true })).toHaveValue("en");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "Back to list", exact: true }).click();
+  await expect(page.getByText("1 issue awaiting your reply", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /Verify the status overlay/ }).click();
+  detail = page.getByRole("region", { name: "Issue details", exact: true });
+  await expect(detail.getByText(/Acknowledging only confirms/)).toBeVisible();
+  await detail.getByRole("button", { name: "Defer", exact: true }).click();
+  expect(cli("get", action.issue_id).status).toBe("pending");
+  await detail.getByRole("button", { name: "Move back to pending", exact: true }).click();
+  await page.getByLabel("Note (optional)", { exact: true }).fill("Will check shortly.");
+  await page.screenshot({ path: "../artifacts/english-mobile.png", fullPage: true });
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 844 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+      true,
+    );
+  }
+  await detail.getByRole("button", { name: "Acknowledge", exact: true }).click();
+  await expect(detail.getByRole("heading", { name: "Acknowledged", exact: true })).toBeVisible();
+  expect(cli("get", action.issue_id).reply.text).toBe("Will check shortly.");
+  await page.getByRole("button", { name: "Sign out", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Sign in to your inbox" })).toBeVisible();
+});
+
+test("瀏覽器預設英文、跨分頁同步、登入錯誤與語言持久保存", async () => {
+  await context.close();
+  context = await browser.newContext({ locale: "en-GB", viewport: { width: 390, height: 844 } });
+  page = await context.newPage();
+  await page.goto(endpoint);
+  await expect(page.getByRole("heading", { name: "Sign in to your inbox" })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Language", exact: true })).toHaveValue("system");
+  await page.getByLabel("Login token", { exact: true }).fill("invalid-demo-token");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Your login is invalid or has expired");
+  await page.getByRole("combobox", { name: "Language", exact: true }).selectOption("zh-TW");
+  await expect(page.getByRole("alert")).toContainText("登入已失效");
+  await expect(page.getByLabel("登入 token", { exact: true })).toHaveValue("");
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-TW");
+  const other = await context.newPage();
+  await other.goto(endpoint);
+  await other.getByRole("combobox", { name: "語言", exact: true }).selectOption("en");
+  await expect(page.getByRole("heading", { name: "Sign in to your inbox" })).toBeVisible();
+  await page.getByRole("combobox", { name: "Language", exact: true }).selectOption("system");
+  await expect(other.getByRole("combobox", { name: "Language", exact: true })).toHaveValue(
+    "system",
+  );
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await other.close();
+});
+
+test("手機長路徑與無斷點內容不撐寬收件匣或議題詳情", async () => {
+  const long = "LongUnbrokenPathSegment".repeat(18);
+  const draft = {
+    kind: "decision",
+    title: long.slice(0, 240),
+    context: `https://example.test/${long}`,
+    blocking_scope: long,
+    created_by: long,
+    owner_coordinator: long,
+    task_ref: long,
+    branch: long,
+    origin_session: long,
+    related_documents: [long],
+    recommendation_reason: long,
+    options: [{ id: "one", label: long, description: long, pros: long, cons: long }],
+  };
+  const issue = JSON.parse(
+    execFileSync(
+      binary,
+      ["create", "--file", "-", "--key", "mobile-long-content", "--data-dir", dir],
+      {
+        encoding: "utf8",
+        input: JSON.stringify(draft),
+        windowsHide: true,
+      },
+    ),
+  ).data;
+  await context.close();
+  context = await browser.newContext({
+    locale: "en-US",
+    viewport: { width: 390, height: 844 },
+    isMobile: true,
+    hasTouch: true,
+    deviceScaleFactor: 3,
+  });
+  page = await context.newPage();
+  async function assertMobileFields() {
+    const sizes = await page
+      .locator("input:not([type=radio]), textarea, select")
+      .evaluateAll((elements) => elements.map((el) => parseFloat(getComputedStyle(el).fontSize)));
+    expect(sizes.every((size) => size >= 16)).toBe(true);
+  }
+  await page.goto(endpoint);
+  await expect(page.getByLabel("Login token", { exact: true })).toBeVisible();
+  await assertMobileFields();
+  await login("Inbox");
+  async function assertFits() {
+    const width = page.viewportSize()!.width;
+    const metrics = await page.evaluate(() => ({
+      width: document.documentElement.clientWidth,
+      scroll: document.documentElement.scrollWidth,
+      viewport: visualViewport?.width,
+      scale: visualViewport?.scale,
+      overflow: [...document.querySelectorAll("main *")]
+        .filter((el) => el.getBoundingClientRect().right > innerWidth + 1)
+        .slice(0, 5)
+        .map((el) => `${el.tagName}.${el.className}`),
+    }));
+    expect(metrics, "Mobile page must fit at its initial scale").toMatchObject({
+      width,
+      scroll: width,
+      scale: 1,
+    });
+    expect(metrics.overflow).toEqual([]);
+  }
+  for (const width of [320, 375, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 });
+    await assertFits();
+  }
+  await page.getByRole("button", { name: new RegExp(long.slice(0, 40)) }).click();
+  await expect(
+    page
+      .getByRole("region", { name: "Issue details" })
+      .getByRole("heading", { name: issue.title, exact: true }),
+  ).toBeVisible();
+  await page.getByRole("radio").check();
+  await page.getByLabel("Your answer or additional context", { exact: true }).fill(long);
+  for (const width of [320, 375, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 });
+    await assertFits();
+    await assertMobileFields();
+  }
+  await page.getByRole("button", { name: "Submit answer", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Your answer has been saved" })).toBeVisible();
+  await page.setViewportSize({ width: 320, height: 844 });
+  await assertFits();
+  await page.screenshot({ path: "../artifacts/mobile-long-content.png", fullPage: true });
+});
+
+test("手機回答後直接前往下一個待回覆議題，略過稍後處理與已撤銷項目", async () => {
+  const deferred = create("decision", "保留到稍後");
+  const withdrawn = create("decision", "已取消的議題");
+  cli("withdraw", withdrawn.issue_id, "--revision", "1");
+  const next = create("notice", "下一個通知");
+  const current = create("decision", "現在要做的決議");
+  await login();
+  await page.getByRole("button", { name: /保留到稍後/ }).click();
+  const detail = page.getByRole("region", { name: "議題詳情", exact: true });
+  await detail.getByRole("button", { name: "稍後處理", exact: true }).click();
+  await detail.getByRole("button", { name: "返回清單", exact: true }).click();
+  // A search must not prevent progressing through the rest of the inbox.
+  await page.getByRole("searchbox").fill(current.title);
+  await page.getByRole("button", { name: new RegExp(current.title) }).click();
+  await expect(page.getByRole("button", { name: "下一個待回覆議題", exact: true })).toHaveCount(0);
+  await page.getByLabel("你的回答或補充說明").fill("採用此方案");
+  await page.getByRole("button", { name: "送出回答", exact: true }).click();
+  const forward = page.getByRole("button", { name: "下一個待回覆議題", exact: true });
+  await expect(forward).toBeEnabled();
+  await page.screenshot({ path: "../artifacts/mobile-next-pending.png", fullPage: true });
+  await page.getByRole("combobox", { name: "語言", exact: true }).selectOption("en");
+  await expect(page.getByRole("button", { name: "Next pending issue", exact: true })).toBeEnabled();
+  await page.getByRole("combobox", { name: "Language", exact: true }).selectOption("zh-TW");
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await forward.click();
+  await expect(detail.getByRole("heading", { name: next.title, exact: true })).toBeFocused();
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  expect(new URL(page.url()).searchParams.get("issue")).toBe(next.issue_id);
+  expect(cli("get", current.issue_id).reply.text).toBe("採用此方案");
+  await expect(page.getByLabel("附註（選填）")).toHaveValue("");
+  expect(cli("get", next.issue_id).status).toBe("pending");
+  await page.getByRole("button", { name: "確認收到", exact: true }).click();
+  await expect(forward).toHaveCount(0);
+  await expect(
+    page.getByText("目前沒有其他待回覆議題，稍後處理的議題仍保留在原清單。", { exact: true }),
+  ).toBeVisible();
+  await page.getByRole("combobox", { name: "語言", exact: true }).selectOption("en");
+  await expect(
+    page.getByText(
+      "No other issues are awaiting your reply. Deferred issues are saved for later.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Back to inbox", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Issue list", exact: true })).toBeVisible();
+  expect(cli("get", deferred.issue_id).status).toBe("pending");
 });
 
 test("detached start 自動初始化、在 launcher 結束後存活並重用服務", async () => {
