@@ -1,0 +1,7 @@
+{
+  "kind": "notice",
+  "title": "測試環境已準備完成",
+  "context": "請確認收到。Ack 只表示已收到這則訊息，不表示完成任何外部操作。",
+  "created_by": "implementation-agent",
+  "owner_coordinator": "coordinator"
+}

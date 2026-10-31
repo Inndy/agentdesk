@@ -1,0 +1,10 @@
+.agentdesk/
+bin/
+artifacts/
+*.db
+*.db-shm
+*.db-wal
+agentdesk-ui/node_modules/
+agentdesk-ui/dist/
+agentdesk-ui/test-results/
+agentdesk-ui/playwright-report/

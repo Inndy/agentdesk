@@ -1,0 +1,18 @@
+{
+  "kind": "decision",
+  "title": "第一批資料匯入要採用哪個策略？",
+  "context": "匯入器已完成，等待確認第一批資料的處理方式。此決議只適用於本次測試資料。",
+  "options": [
+    { "id": "small", "label": "先匯入 100 筆", "pros": "容易檢查並回復", "cons": "需要再執行後續批次" },
+    { "id": "all", "label": "一次匯入全部", "pros": "較快完成", "cons": "若出錯，影響範圍較大" }
+  ],
+  "recommended_option": "small",
+  "recommendation_reason": "先驗證少量資料，再決定是否擴大。",
+  "created_by": "implementation-agent",
+  "owner_coordinator": "coordinator",
+  "origin_session": "example-session",
+  "task_ref": "import-first-batch",
+  "blocking_scope": "只阻擋資料匯入，其他開發工作可以繼續。",
+  "related_documents": ["SPEC.md"],
+  "priority": "normal"
+}
