@@ -7,6 +7,7 @@
 - 公開展示準備：SpiceSharp 五個歷史議題以唯讀方式匯出、移除私人環境資訊，停用 Telegram 在獨立暫存專案重播。1440 px 桌面與 390 px 手機完整頁面截圖已逐張檢查，手機無水平溢位。
 - CI 模式：Windows 上實際使用 Playwright headless Chromium，6 項 E2E 全部通過；沒有依賴 CDP 9222。Go vet／測試、Vite+ check、production build 重新通過；前端 unit test 仍無測試檔案。
 - `.github/workflows/ci.yml`：actionlint v1.7.12 驗證通過，第三方 actions 使用固定 commit SHA。GitHub runner 結果以 repository 的 Actions 頁面為準。
+- [GitHub Actions run 41210787434](https://github.com/Inndy/agentdesk/actions/runs/41210787434)：前端檢查／建置、Windows／Linux／macOS 原生 Go vet／測試／編譯、六種跨平台 binary artifact，以及 Linux headless Chromium 的 6 項 E2E 全部通過。來源 commit 為 `ab4f64a`。
 - `CGO_ENABLED=0 go test ./...`：24 項測試通過，包含資料／HTTP／worktree／PID、NIC 選擇、Telegram outbox、一次性登入連結，以及 CLI／啟動設定。
 - `go vet ./...`：通過。
 - `vp -C agentdesk-ui check`：格式、lint、型別檢查通過。
@@ -50,7 +51,7 @@ Desktop 另一個對話的獨立 built-in Browser 檢查也已回報登入、推
 ## 尚未執行的環境驗證
 
 - 實體手機、使用者自己的 VPN、HTTPS 反向代理與防火牆。
-- Linux／macOS 與 arm64 的實機執行；目前只有交叉編譯證據。
+- Linux／macOS 與 arm64 的實體桌面操作、OS 開啟瀏覽器與 VPN；GitHub hosted runner 的原生 Go 測試不等同這些情境。
 - 以使用者的預設瀏覽器實際啟動 `login --open`；瀏覽器登入流程已由隔離測試驗證，OS 開啟命令由程式依平台提供。
 - Claude Code／Codex 新一輪的 skill 載入與 agent 實際選用的背景 job；安裝與共享 executable 已核對，不宣稱已替兩個宿主啟用 `/loop`、goal 或即時注入。
 

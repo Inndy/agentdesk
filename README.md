@@ -33,7 +33,13 @@
 
 </details>
 
-## 建置
+## 取得執行檔
+
+可到 [GitHub Actions](https://github.com/Inndy/agentdesk/actions/workflows/ci.yml)，選擇成功的 CI 執行紀錄，在 **Artifacts** 下載符合系統的 `agentdesk-<平台>-<架構>` 壓縮檔。平台為 `windows`／`darwin`（macOS）／`linux`；Intel／AMD 選 `amd64`，Apple Silicon 或 ARM64 選 `arm64`。下載 artifacts 需登入 GitHub，保留期限為 14 天。
+
+解壓縮後即可執行；macOS／Linux 請先用 `chmod +x` 賦予執行權限。也可以依下列步驟自行建置。
+
+## 自行建置
 
 需要 Go 1.25 以上與 [Vite+](https://www.viteplus.dev/)（`vp`）。前端使用 Vue 3、TypeScript、shadcn-vue 與 Tailwind CSS。
 
